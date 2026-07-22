@@ -3,9 +3,9 @@
 **Phase:** 0 (Foundations) — design only.
 
 ## Done
-- Service framework + WASM runtime split documented ([ARCHITECTURE.md](./ARCHITECTURE.md)).
+- Service framework + WASM runtime split documented and reviewed ([ARCHITECTURE.md](./ARCHITECTURE.md)).
 - Capability-backed WASI approach fixed ([ADR-0003](https://github.com/lantern-os/lantern-rfcs/blob/main/adr/0003-wasm-as-portable-app-abi.md)).
-- Threat model drafted.
+- Threat model drafted and reviewed.
 
 ## Next
 - Select a Wasm engine and AOT strategy.
