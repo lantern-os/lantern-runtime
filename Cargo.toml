@@ -1,0 +1,27 @@
+[package]
+name = "lantern-runtime"
+version = "0.0.0"
+edition = "2021"
+description = "LanternOS Wasm runtime — Phase 2 prototype (RFC-0013/ADR-0017)"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[lib]
+name = "lantern_runtime"
+path = "src/lib.rs"
+
+[dependencies]
+lantern-crypto = { git = "https://github.com/lantern-os/lantern-crypto", branch = "main" }
+# RFC-0013/ADR-0017: Wasmtime, Component Model surface (ADR-0003). This is the
+# runtime-role feature set only — see the `compiler` feature below for why `cranelift`
+# is deliberately absent here, not merely unused.
+wasmtime = { version = "24", default-features = false, features = ["runtime", "component-model", "std"] }
+
+[features]
+# RFC-0013's offline AOT-compiler role. `Component::new`/`Engine::precompile_component`
+# are themselves `#[cfg]`-gated in wasmtime's own source on `cranelift`/`winch` — without
+# this feature they don't exist in this crate's build at all, so the runtime role can't
+# reach them even by mistake. Never enable this feature in the confined per-component
+# runtime process; it exists for the separate, offline compiler role (`compiler` module)
+# and this crate's own round-trip test.
+compiler = ["wasmtime/cranelift", "wasmtime/wat"]
