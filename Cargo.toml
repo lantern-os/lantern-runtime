@@ -15,7 +15,7 @@ lantern-crypto = { git = "https://github.com/lantern-os/lantern-crypto", branch 
 # RFC-0013/ADR-0017: Wasmtime, Component Model surface (ADR-0003). This is the
 # runtime-role feature set only — see the `compiler` feature below for why `cranelift`
 # is deliberately absent here, not merely unused.
-wasmtime = { version = "24", default-features = false, features = ["runtime", "component-model", "std"] }
+wasmtime = { version = "48", default-features = false, features = ["runtime", "component-model", "std"] }
 
 [dev-dependencies]
 # RFC-0014 host-binding tests drive the resource-scoped mapping against a *real*

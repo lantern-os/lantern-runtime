@@ -59,6 +59,15 @@
     `--features compiler` — the link-scoped clock end to end through real Wasmtime
     instantiation (granted → readable; denied → instantiation refused). `cargo clippy
     --all-targets -D warnings` clean, with and without `--features compiler`.
+- **Wasmtime pin bumped `24` → `48`** (2026-08-29, maintenance — ADR-0017's decision is
+  unchanged). Wasmtime 24 (mid-2024) cannot parse a component produced by a current Rust
+  toolchain (`wasm32-wasip2` / `wit-bindgen`), which the `lantern-example-signer` demo
+  needs. The runtime-role dependency tree is still free of `cranelift-codegen`/`winch`
+  (`cargo tree` confirmed); `wit-component` now appears, but only as a **proc-macro**
+  build dependency of `bindgen!`, not linked into any runtime binary. Migration was small:
+  `bindgen!`'s `with:` resource key is now `"pkg:ns/iface.resource"` (dot, was slash) and
+  `add_to_linker` takes an explicit `HasSelf<T>` type parameter. Full test + clippy matrix
+  re-run green.
 - **Host-target only, for now.** This crate builds and tests against a native `std` host
   target (Wasmtime requires OS-level mmap/threads/signals it doesn't have a LanternOS
   equivalent for yet) — it does not build for `riscv64gc-unknown-none-elf` the way

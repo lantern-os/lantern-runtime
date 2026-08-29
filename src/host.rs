@@ -38,7 +38,9 @@ wasmtime::component::bindgen!({
     path: "wit",
     world: "app",
     with: {
-        "lantern:host/keystore/key": HostCapability,
+        // `pkg:ns/interface.resource` — the `key` resource of the `keystore` interface is
+        // backed host-side by our own `HostCapability`, not a bindgen-generated type.
+        "lantern:host/keystore.key": HostCapability,
     },
 });
 
@@ -323,13 +325,15 @@ pub fn build_linker(
     engine: &Engine,
     manifest: &GrantManifest,
 ) -> wasmtime::Result<Linker<RuntimeState>> {
+    use wasmtime::component::HasSelf;
+
     let mut linker = Linker::new(engine);
 
     if manifest.monotonic_clock.is_some() {
-        monotonic_clock::add_to_linker(&mut linker, |s: &mut RuntimeState| s)?;
+        monotonic_clock::add_to_linker::<_, HasSelf<RuntimeState>>(&mut linker, |s| s)?;
     }
     if !manifest.keystore_keys.is_empty() {
-        keystore::add_to_linker(&mut linker, |s: &mut RuntimeState| s)?;
+        keystore::add_to_linker::<_, HasSelf<RuntimeState>>(&mut linker, |s| s)?;
     }
 
     Ok(linker)
