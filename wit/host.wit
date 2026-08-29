@@ -1,0 +1,76 @@
+// RFC-0014 / ADR-0018 — the capability-gated host interface set a LanternOS Wasm
+// component may import. Two mapping shapes, one interface each as the worked example:
+//
+//   * `monotonic-clock` — LINK-SCOPED. No per-call object to scope (the functions take
+//     no arguments), so the grant is a single yes/no decided at instantiation: the host
+//     either links this whole interface or refuses to, and a component that imports a
+//     refused interface fails to instantiate.
+//
+//   * `keystore` — RESOURCE-SCOPED. Each `key` handle is backed, host-side, by one
+//     capability record (a service badge + a key id) that the capability manifest bound
+//     before the component started. A component cannot construct a `key`; `open` only
+//     ever returns handles the manifest already granted.
+//
+// This is a LOCAL package, not a re-export of `wasi:*`. `monotonic-clock` mirrors
+// `wasi:clocks/monotonic-clock@0.2.x` field-for-field so a future switch to the real
+// WASI identifier is mechanical; `keystore` is LanternOS-owned because no keystore
+// exists in the stable WASI 0.2 snapshot. `wasi:filesystem` is deliberately absent —
+// its path/directory shape does not fit `lantern-filesystem`'s content-addressed store
+// (ADR-0018, deferred to its own future RFC).
+
+package lantern:host@0.1.0;
+
+/// Mirrors `wasi:clocks/monotonic-clock@0.2.x`. Link-scoped: granted or refused whole.
+interface monotonic-clock {
+    type instant = u64;
+    type duration = u64;
+
+    /// Nanoseconds since an arbitrary monotonic epoch. Wired to `lantern-hal`'s real
+    /// `monotonic_time_ns()` (RFC-0012 / ADR-0016) when this interface is linked at all.
+    now: func() -> instant;
+
+    /// The tick period of `now`, in nanoseconds.
+    resolution: func() -> duration;
+}
+
+/// LanternOS-owned. Resource-scoped: one host capability record per `key` handle.
+interface keystore {
+    /// Relayed verbatim from the owning crypto service's own deny-by-default check —
+    /// this mapping never invents its own notion of "denied".
+    enum error-code {
+        /// The badge behind this handle was denied by the crypto service: unknown,
+        /// revoked, scoped to a different key, or not granted this operation.
+        access,
+        /// The arguments were malformed (e.g. a nonce of the wrong length) or the
+        /// underlying primitive rejected them (AEAD authentication failure).
+        invalid,
+    }
+
+    /// A capability to one key held by the crypto service, scoped to the operation
+    /// subset the manifest granted. Methods forward to the service, which re-checks the
+    /// badge on every call.
+    resource key {
+        /// XChaCha20-Poly1305, detached. Returns `(ciphertext, tag)`.
+        encrypt: func(nonce: list<u8>, aad: list<u8>, plaintext: list<u8>)
+            -> result<tuple<list<u8>, list<u8>>, error-code>;
+        /// XChaCha20-Poly1305, detached. `tag` is the detached authentication tag.
+        decrypt: func(nonce: list<u8>, aad: list<u8>, ciphertext: list<u8>, tag: list<u8>)
+            -> result<list<u8>, error-code>;
+        /// Ed25519. Returns the 64-byte signature.
+        sign: func(message: list<u8>) -> result<list<u8>, error-code>;
+    }
+
+    /// The ONLY way a component obtains a `key`. `slot` indexes the capability
+    /// manifest's explicit grant list — not any ambient namespace — and `none` is
+    /// returned for a slot the manifest left empty. A component cannot forge a handle
+    /// for a key it was not granted; there is nothing here to guess.
+    open: func(slot: u32) -> option<key>;
+}
+
+/// The import surface for a LanternOS app or agent. A real app's SDK-generated world
+/// will import only the subset its capability manifest declares; this is the full set
+/// the runtime knows how to satisfy today.
+world app {
+    import monotonic-clock;
+    import keystore;
+}

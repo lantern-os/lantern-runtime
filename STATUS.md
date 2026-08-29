@@ -29,6 +29,36 @@
   clippy --all-targets -D warnings` clean, both with and without `--features compiler`;
   `cargo tree` confirms `cranelift-codegen`/`regalloc2`/`wasmtime-cranelift` are absent
   from the default (runtime-role) dependency tree.
+- **The WIT-handle ⇄ capability mapping is fixed and first-implemented** —
+  ~~specify it~~ / ~~custom capability-gated host bindings~~ resolved.
+  [RFC-0014](https://github.com/lantern-os/lantern-rfcs/blob/main/rfcs/0014-wit-handle-capability-mapping.md)/[ADR-0018](https://github.com/lantern-os/lantern-rfcs/blob/main/adr/0018-wit-handle-capability-mapping.md)
+  (Accepted) fix two mapping shapes; `src/host.rs` + `wit/host.wit` implement both:
+  - **Resource-scoped** (`lantern:crypto/keystore`, a new LanternOS-owned WIT interface —
+    no keystore in the stable WASI 0.2 snapshot): each `key` handle is backed by a
+    `HostCapability` (a `Broker` badge + `KeyId`) in a Wasmtime `ResourceTable`;
+    `encrypt`/`decrypt`/`sign` forward to a real `lantern_crypto::Keystore` (a
+    `KeystoreService` trait — an in-process stand-in for the not-yet-confined crypto
+    service, `lantern-crypto/STATUS.md`), which re-checks the badge every call.
+    Denied/revoked/wrong-key all relay as `error-code::access`; the mapping adds no check
+    of its own. `keystore.open(slot)` is the only way a guest obtains a handle — `slot`
+    indexes the manifest's explicit grant list, nothing ambient.
+  - **Link-scoped** (`monotonic-clock`, mirroring `wasi:clocks/monotonic-clock@0.2.x`):
+    `build_linker` links the whole interface or leaves it unlinked; an importing
+    component fails to instantiate when it's unlinked. `now` reads a manifest-supplied
+    `fn() -> u64` (production: `lantern-hal`'s `monotonic_time_ns()`; a host shim on the
+    current x86-64 test target, whose HAL clock is still an `unimplemented!` stub — a
+    `riscv64`-only follow-up).
+  - `GrantManifest` is the runtime-side contract only (one badge per resource-scoped
+    grant, one yes/no per link-scoped facility); the manifest *file format* stays
+    `lantern-sdk`'s job. `wasi:filesystem` is deliberately unmapped (ADR-0018 — its
+    path/directory shape doesn't fit `lantern-filesystem`'s CAS store; its own future RFC).
+  - 16 tests pass (13 new): the resource-scoped mapping against a **real** `Keystore`
+    with a real `Broker`-minted badge (encrypt/decrypt round trip, ENCRYPT-not-DECRYPT
+    denial, post-revocation denial, signature length), a fault-injecting `KeystoreService`
+    double for the error-translation and argument-validation edges, and — under
+    `--features compiler` — the link-scoped clock end to end through real Wasmtime
+    instantiation (granted → readable; denied → instantiation refused). `cargo clippy
+    --all-targets -D warnings` clean, with and without `--features compiler`.
 - **Host-target only, for now.** This crate builds and tests against a native `std` host
   target (Wasmtime requires OS-level mmap/threads/signals it doesn't have a LanternOS
   equivalent for yet) — it does not build for `riscv64gc-unknown-none-elf` the way
@@ -36,13 +66,15 @@
   do. See "Next"/"Blocked on".
 
 ## Next
-- Specify the WIT-handle ⇄ capability mapping — RFC-0013 explicitly deferred this; needs
-  its own RFC before any real WASI host binding is wired up. Today's runtime role can load
-  and run a component with no host imports at all (the round-trip test's component only
-  exports); no host function surface exists yet.
-- Custom, capability-gated WASI 0.2 host bindings — depends on the above, and on
-  [`lantern-capabilities`](https://github.com/lantern-os/lantern-capabilities)'s `Broker`/badge-check shape
-  (`lantern-crypto`/`lantern-filesystem` already show the pattern one layer down).
+- Wire `monotonic-clock`'s `now` to `lantern-hal`'s real `monotonic_time_ns()` on
+  `riscv64` (host target keeps the shim until the x86-64 HAL clock stops being a stub).
+- More interfaces on the two established shapes: a `lantern:filesystem` interface over
+  `lantern-filesystem`'s `Store` (resource-scoped; needs ADR-0018's deferred filesystem
+  RFC first), randomness once `lantern-hal` has a CSPRNG (link-scoped).
+- Feed a verified sealed-capability token ([RFC-0011](https://github.com/lantern-os/lantern-rfcs/blob/main/rfcs/0011-sealed-capability-token-format.md))
+  into a resource-scoped grant, once a real cross-machine-sharing consumer exists.
+- Benchmark resource-scoped per-call cost once the owning services are real IPC processes
+  — RFC-0014 flags hot-loop crypto as a real latency risk, unmeasured.
 - Resource accounting (CPU/memory budgets) tied to scheduling contexts — Wasmtime's
   fuel/epoch-interruption mechanism is the identified attachment point (RFC-0013), not yet
   wired up.
@@ -58,5 +90,5 @@
 - ~~Kernel IPC/endpoints ([`lantern-kernel`](https://github.com/lantern-os/lantern-kernel)).~~ Resolved —
   RFC-0009/ADR-0014.
 - ~~Capability brokering API ([`lantern-capabilities`](https://github.com/lantern-os/lantern-capabilities)).~~
-  Resolved — `Broker` is real and proven (`lantern-capabilities/STATUS.md`); this crate
-  doesn't consume it yet (see "Next"), but the API this was blocked on now exists.
+  Resolved — `Broker` is real and proven (`lantern-capabilities/STATUS.md`), and the
+  resource-scoped mapping now consumes badges it minted (via `lantern-crypto`'s `Keystore`).

@@ -18,14 +18,22 @@
 //!   compiles a `.wasm`/`.wat` component ahead-of-time via Cranelift and signs the result.
 //!   Runs at packaging/install time, never inside a running confined app's own process.
 //!
-//! What this crate does not yet do (RFC-0013's explicit deferrals): capability-gated WASI
-//! host bindings — no host functions are wired up at all yet, so today's components can
-//! only export, never import — resource-accounting/fuel metering, and running under
-//! anything but a native `std` host target. Bare-metal `riscv64` hosting needs Wasmtime's
-//! custom-platform embedding support, real porting work RFC-0013 flagged but did not do.
+//! The capability-gated host bindings
+//! ([RFC-0014](../https://github.com/lantern-os/lantern-rfcs/blob/main/rfcs/0014-wit-handle-capability-mapping.md)/
+//! [ADR-0018](../https://github.com/lantern-os/lantern-rfcs/blob/main/adr/0018-wit-handle-capability-mapping.md)) live in
+//! [`host`]: the WIT-handle ⇄ capability mapping, its two worked interfaces
+//! (`lantern:crypto/keystore` resource-scoped, `monotonic-clock` link-scoped), and the
+//! link-or-refuse [`host::build_linker`]. Still custom, not `wasmtime-wasi` (ADR-0017).
+//!
+//! What this crate does not yet do (RFC-0013's explicit deferrals):
+//! resource-accounting/fuel metering, and running under anything but a native `std` host
+//! target. Bare-metal `riscv64` hosting needs Wasmtime's custom-platform embedding
+//! support, real porting work RFC-0013 flagged but did not do.
 
 #[cfg(feature = "compiler")]
 pub mod compiler;
+pub mod host;
 pub mod verified;
 
+pub use host::{build_linker, GrantManifest, HostCapability, MonotonicClock, RuntimeState};
 pub use verified::{load_verified_component, runtime_engine, LoadError};

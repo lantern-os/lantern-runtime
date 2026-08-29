@@ -25,7 +25,12 @@ TCB and performance-critical services are native Rust; the untrusted, portable a
 is Wasm. AI agents run here ([`lantern-ai-runtime`](https://github.com/lantern-os/lantern-ai-runtime) builds on this).
 
 ## Open questions
-- Which Wasm engine to adopt/build on; the AOT pipeline shape.
+- ~~Which Wasm engine to adopt/build on; the AOT pipeline shape.~~ Fixed —
+  [RFC-0013](https://github.com/lantern-os/lantern-rfcs/blob/main/rfcs/0013-wasm-engine-selection-and-aot-strategy.md)/[ADR-0017](https://github.com/lantern-os/lantern-rfcs/blob/main/adr/0017-wasm-engine-selection-and-aot-strategy.md).
 - Pinning/versioning the WASI/Component-Model surface as a governed public ABI.
-- WIT-handle ⇄ LanternOS capability mapping.
+- ~~WIT-handle ⇄ LanternOS capability mapping.~~ Fixed —
+  [RFC-0014](https://github.com/lantern-os/lantern-rfcs/blob/main/rfcs/0014-wit-handle-capability-mapping.md)/[ADR-0018](https://github.com/lantern-os/lantern-rfcs/blob/main/adr/0018-wit-handle-capability-mapping.md):
+  resource-scoped (badge per handle in a `ResourceTable`) vs. link-scoped
+  (link-or-refuse per interface); first two interfaces implemented in `src/host.rs`.
+  `wasi:filesystem`'s shape mismatch with the CAS store is deferred to its own future RFC.
 - Per-component resource accounting tied to scheduling contexts.

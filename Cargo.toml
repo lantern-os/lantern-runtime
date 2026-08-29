@@ -17,6 +17,15 @@ lantern-crypto = { git = "https://github.com/lantern-os/lantern-crypto", branch 
 # is deliberately absent here, not merely unused.
 wasmtime = { version = "24", default-features = false, features = ["runtime", "component-model", "std"] }
 
+[dev-dependencies]
+# RFC-0014 host-binding tests drive the resource-scoped mapping against a *real*
+# `lantern-crypto` `Keystore` with a real `Broker`-minted badge — the same
+# "prototype against something real, not a simulation" discipline the sibling crates'
+# own test suites follow. Host-target only, like the rest of this crate's tests.
+lantern-capabilities = { git = "https://github.com/lantern-os/lantern-capabilities", branch = "main" }
+lantern-hal = { git = "https://github.com/lantern-os/lantern-hal", branch = "main" }
+lantern-kernel = { git = "https://github.com/lantern-os/lantern-kernel", branch = "main" }
+
 [features]
 # RFC-0013's offline AOT-compiler role. `Component::new`/`Engine::precompile_component`
 # are themselves `#[cfg]`-gated in wasmtime's own source on `cranelift`/`winch` — without
