@@ -59,6 +59,21 @@
     `--features compiler` — the link-scoped clock end to end through real Wasmtime
     instantiation (granted → readable; denied → instantiation refused). `cargo clippy
     --all-targets -D warnings` clean, with and without `--features compiler`.
+- **`lantern:host/filesystem` implemented** — RFC-0014's deferred filesystem choice,
+  resolved by [RFC-0016](https://github.com/lantern-os/lantern-rfcs/blob/main/rfcs/0016-filesystem-wit-interface.md)/[ADR-0019](https://github.com/lantern-os/lantern-rfcs/blob/main/adr/0019-filesystem-wit-interface.md)
+  (Accepted) in favour of a custom interface shaped like `lantern-filesystem`'s `Store`:
+  a `file` handle backed by a `HostFile` (`Store` badge + `FileId`, a distinct host type
+  from `HostCapability` — R5), `read`/`write` forwarding to a real `lantern_filesystem::Store`
+  (a `FilesystemService` trait / `InProcessFilesystem` stand-in), `filesystem.open(slot)`
+  the only acquisition path. **No paths, no directories, no listing, no guest-driven file
+  creation.** Denied / revoked / wrong-`FileId` all relay as `error-code::access`; an
+  unwritten file reads as empty; an oversized write is `invalid` (pre-checked before the
+  store is consulted). `RuntimeState::new` is now a builder (`.with_keystore` /
+  `.with_filesystem`). 26 tests total (10 new fs tests, against a real `Store` with real
+  `Store`-minted badges — read/write round trip, read-denied, write-denied,
+  wrong-file → `access`, oversize → `invalid`, unwritten → empty, dropped handle,
+  `open` only for granted slots). `lantern-runtime` gains a normal dep on
+  `lantern-filesystem` (not TCB). clippy clean both feature sets.
 - **Wasmtime pin bumped `24` → `48`** (2026-08-29, maintenance — ADR-0017's decision is
   unchanged). Wasmtime 24 (mid-2024) cannot parse a component produced by a current Rust
   toolchain (`wasm32-wasip2` / `wit-bindgen`), which the `lantern-example-signer` demo
@@ -77,9 +92,11 @@
 ## Next
 - Wire `monotonic-clock`'s `now` to `lantern-hal`'s real `monotonic_time_ns()` on
   `riscv64` (host target keeps the shim until the x86-64 HAL clock stops being a stub).
-- More interfaces on the two established shapes: a `lantern:filesystem` interface over
-  `lantern-filesystem`'s `Store` (resource-scoped; needs ADR-0018's deferred filesystem
-  RFC first), randomness once `lantern-hal` has a CSPRNG (link-scoped).
+- `filesystem` v0 follow-ups (RFC-0016 "Unresolved"): `read-at`/`write-at` + a `size`
+  accessor when `Store` grows chunking; `flush`/durability once `Store` has a persistence
+  story; a `history` sub-interface for the version pillar.
+- More interfaces on the established shapes: randomness once `lantern-hal` has a CSPRNG
+  (link-scoped); a socket/network interface once `lantern-network` has a real service.
 - Feed a verified sealed-capability token ([RFC-0011](https://github.com/lantern-os/lantern-rfcs/blob/main/rfcs/0011-sealed-capability-token-format.md))
   into a resource-scoped grant, once a real cross-machine-sharing consumer exists.
 - Benchmark resource-scoped per-call cost once the owning services are real IPC processes

@@ -12,6 +12,9 @@ path = "src/lib.rs"
 
 [dependencies]
 lantern-crypto = { git = "https://github.com/lantern-os/lantern-crypto", branch = "main" }
+# RFC-0016/ADR-0019: the `lantern:host/filesystem` interface forwards to this crate's
+# real `Store`. A normal (non-TCB) dependency, like `lantern-crypto`.
+lantern-filesystem = { git = "https://github.com/lantern-os/lantern-filesystem", branch = "main" }
 # RFC-0013/ADR-0017: Wasmtime, Component Model surface (ADR-0003). This is the
 # runtime-role feature set only — see the `compiler` feature below for why `cranelift`
 # is deliberately absent here, not merely unused.
