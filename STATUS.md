@@ -1,6 +1,6 @@
 # lantern-runtime — Status
 
-**Phase:** 2 (Capability runtime & first services) — open per [RFC-0009](https://github.com/lantern-os/lantern-rfcs/blob/main/rfcs/0009-phase-1-to-phase-2-transition.md)/[ADR-0014](https://github.com/lantern-os/lantern-rfcs/blob/main/adr/0014-phase-1-complete-phase-2-opened.md). First prototype code now exists — see "Done".
+**Phase:** 2 — opened per [RFC-0009](https://github.com/lantern-os/lantern-rfcs/blob/main/rfcs/0009-phase-1-to-phase-2-transition.md)/[ADR-0014](https://github.com/lantern-os/lantern-rfcs/blob/main/adr/0014-phase-1-complete-phase-2-opened.md), **closed** per [RFC-0017](https://github.com/lantern-os/lantern-rfcs/blob/main/rfcs/0017-phase-2-to-phase-3-transition.md)/[ADR-0021](https://github.com/lantern-os/lantern-rfcs/blob/main/adr/0021-phase-2-complete-phase-3-opened.md): the Phase 2 exit criterion is met (a third-party Wasm app confined, adversarially — `lantern-example-signer` + `lantern-sdk build`). This crate's "Next" items continue as ordinary engineering work; the Roadmap's gate has moved to Phase 3. **Carried forward (ADR-0021):** this crate builds and runs only on a native `std` host target — the Wasmtime `riscv64` custom-platform port (against `lantern-hal`/VSpace-Frame) is **Phase 3's first work**, not a Phase 2 gap.
 
 ## Done
 - Service framework + WASM runtime split documented and reviewed ([ARCHITECTURE.md](./ARCHITECTURE.md)).
