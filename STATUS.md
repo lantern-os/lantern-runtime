@@ -118,10 +118,16 @@
 - **The confined-execution port** — running this crate inside a confined `riscv64` process
   and forwarding host calls to real `Keystore`/`Store` services over IPC.
   [RFC-0018](https://github.com/lantern-os/lantern-rfcs/blob/main/rfcs/0018-confined-execution-port.md)
-  (Draft) is the design: Wasmtime `no_std` + the Pulley bytecode interpreter behind its
-  custom-platform C API (over `Frame` capabilities), the compiler role emitting Pulley
-  `.cwasm`, and `IpcKeystore`/`IpcFilesystem` trait impls using a badged service endpoint
-  + a shared `Frame` (no in-memory IPC buffer). **Phase 3's foundational work** (ADR-0021).
+  (Accepted) is the design, fixed by two ADRs:
+  [ADR-0022](https://github.com/lantern-os/lantern-rfcs/blob/main/adr/0022-confined-service-model-and-call-transport.md)
+  — `IpcKeystore`/`IpcFilesystem` trait impls holding a badged service endpoint + a shared
+  `Frame` view (no in-memory IPC buffer), the services as confined U-mode programs on a new
+  non-TCB `lantern-abi` substrate; and
+  [ADR-0023](https://github.com/lantern-os/lantern-rfcs/blob/main/adr/0023-wasmtime-no-std-pulley-hosting.md)
+  — Wasmtime `no_std` + the Pulley bytecode interpreter behind its custom-platform C API
+  (over `Frame` capabilities), the compiler role emitting portable Pulley `.cwasm`, fuel for
+  v0 interruption. Adds nothing to the TCB. **Phase 3's foundational work** (ADR-0021);
+  Part 3 (this crate's `riscv64` build) has no hard dependency on Part 1 (the services port).
 - Where the compiler role physically runs (`lantern-sdk`/packaging tooling vs. an
   on-device install-time service) and the `.cwasm` artifact's signing-key management story
   — both left to `lantern-sdk`/packaging design, not decided here.
