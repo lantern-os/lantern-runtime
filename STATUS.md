@@ -74,6 +74,12 @@
   wrong-file → `access`, oversize → `invalid`, unwritten → empty, dropped handle,
   `open` only for granted slots). `lantern-runtime` gains a normal dep on
   `lantern-filesystem` (not TCB). clippy clean both feature sets.
+- **`GrantManifest` resource-scoped fields are now `Vec<Option<…>>`** (positional with
+  holes) per [RFC-0015](https://github.com/lantern-os/lantern-rfcs/blob/main/rfcs/0015-capability-manifest-format.md)/[ADR-0020](https://github.com/lantern-os/lantern-rfcs/blob/main/adr/0020-capability-manifest-format.md)
+  (Accepted): declaration order is the permanent `open(slot)` index, a `None` slot is a
+  declined-or-unbound role that reads as `none`, and a non-empty all-`None` vec means the
+  interface was *declared* (so it's linked) but every role declined. An empty vec still
+  means "not declared" → interface unlinked. 27 tests.
 - **Wasmtime pin bumped `24` → `48`** (2026-08-29, maintenance — ADR-0017's decision is
   unchanged). Wasmtime 24 (mid-2024) cannot parse a component produced by a current Rust
   toolchain (`wasm32-wasip2` / `wit-bindgen`), which the `lantern-example-signer` demo

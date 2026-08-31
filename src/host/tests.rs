@@ -57,7 +57,7 @@ impl KeystoreService for Spy {
 }
 
 fn state_with(service: impl KeystoreService + 'static, caps: Vec<HostCapability>) -> RuntimeState {
-    RuntimeState::new(GrantManifest { keystore_keys: caps, ..Default::default() })
+    RuntimeState::new(GrantManifest { keystore_keys: caps.into_iter().map(Some).collect(), ..Default::default() })
         .with_keystore(Box::new(service))
 }
 
@@ -293,7 +293,7 @@ mod fs {
     use wasmtime::component::Resource;
 
     fn fs_state(service: InProcessFilesystem, files: Vec<HostFile>) -> RuntimeState {
-        RuntimeState::new(GrantManifest { filesystem_files: files, ..Default::default() })
+        RuntimeState::new(GrantManifest { filesystem_files: files.into_iter().map(Some).collect(), ..Default::default() })
             .with_filesystem(Box::new(service))
     }
 
@@ -430,10 +430,30 @@ mod fs {
         let mut fs = real_fs(None);
         let badge = fs.grant(FileOps::READ, 7);
         let manifest = GrantManifest {
-            filesystem_files: vec![HostFile::filesystem_file(badge, fs.file)],
+            filesystem_files: vec![Some(HostFile::filesystem_file(badge, fs.file))],
             ..Default::default()
         };
         assert!(build_linker(&engine, &manifest).is_ok());
+    }
+
+    #[test]
+    fn a_declared_but_declined_slot_reads_as_none_and_the_interface_still_links() {
+        // RFC-0015/ADR-0020: a role the binder declined is a `None` slot — the interface
+        // is still linked (the vec is non-empty), and `open` on it returns `none` exactly
+        // as it would for an un-opened handle.
+        let engine = crate::verified::runtime_engine();
+        let manifest = GrantManifest {
+            filesystem_files: vec![None, None],
+            ..Default::default()
+        };
+        assert!(build_linker(&engine, &manifest).is_ok(), "declared → linked");
+
+        let mut state = RuntimeState::new(GrantManifest {
+            filesystem_files: vec![None, None],
+            ..Default::default()
+        });
+        assert!(open(&mut state, 0).is_none());
+        assert!(open(&mut state, 1).is_none());
     }
 }
 

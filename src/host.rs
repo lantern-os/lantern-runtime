@@ -267,12 +267,15 @@ pub struct MonotonicClock {
 /// `lantern-sdk`'s job, not fixed here.
 #[derive(Default)]
 pub struct GrantManifest {
-    /// Resource-scoped keystore grants, in slot order. `keystore.open(n)` returns a
-    /// handle iff `n < keystore_keys.len()`.
-    pub keystore_keys: Vec<HostCapability>,
-    /// Resource-scoped filesystem grants, in slot order. `filesystem.open(n)` returns a
-    /// handle iff `n < filesystem_files.len()`.
-    pub filesystem_files: Vec<HostFile>,
+    /// Resource-scoped keystore grants, **positional with holes** (RFC-0015/ADR-0020):
+    /// slot `n` is `keystore.open(n)`, `None` is a declined-or-unbound role that reads as
+    /// `none` just like an un-opened handle. An empty vec means the manifest did not
+    /// declare `keystore` at all (the interface is left unlinked); a non-empty vec of all
+    /// `None` means it declared roles that were all declined (linked, every `open`
+    /// returns `none`).
+    pub keystore_keys: Vec<Option<HostCapability>>,
+    /// Resource-scoped filesystem grants — same positional-with-holes semantics.
+    pub filesystem_files: Vec<Option<HostFile>>,
     /// Link-scoped: `Some` links `monotonic-clock`; `None` leaves it unlinked, so a
     /// component that imports it fails to instantiate.
     pub monotonic_clock: Option<MonotonicClock>,
@@ -295,8 +298,8 @@ impl GrantManifest {
 /// `with_*` methods for whichever services the manifest's resource-scoped grants need.
 pub struct RuntimeState {
     table: ResourceTable,
-    keys: Vec<HostCapability>,
-    files: Vec<HostFile>,
+    keys: Vec<Option<HostCapability>>,
+    files: Vec<Option<HostFile>>,
     keystore: Option<Box<dyn KeystoreService>>,
     filesystem: Option<Box<dyn FilesystemService>>,
     clock: Option<MonotonicClock>,
@@ -409,7 +412,7 @@ impl keystore::HostKey for RuntimeState {
 
 impl keystore::Host for RuntimeState {
     fn open(&mut self, slot: u32) -> Option<Resource<HostCapability>> {
-        let cap = *self.keys.get(usize::try_from(slot).ok()?)?;
+        let cap = self.keys.get(usize::try_from(slot).ok()?).copied().flatten()?;
         self.table.push(cap).ok()
     }
 }
@@ -467,7 +470,7 @@ impl filesystem::HostFile for RuntimeState {
 
 impl filesystem::Host for RuntimeState {
     fn open(&mut self, slot: u32) -> Option<Resource<HostFile>> {
-        let cap = *self.files.get(usize::try_from(slot).ok()?)?;
+        let cap = self.files.get(usize::try_from(slot).ok()?).copied().flatten()?;
         self.table.push(cap).ok()
     }
 }
@@ -488,11 +491,12 @@ impl monotonic_clock::Host for RuntimeState {
 // Linker construction — the link-or-refuse decision point
 // -------------------------------------------------------------------------------------
 
-/// Builds the [`Linker`] for a component whose grants are `manifest`. Resource-scoped
-/// interfaces are linked when the manifest grants at least one object for them;
-/// link-scoped interfaces are linked when the manifest grants the facility. An imported
-/// interface that ends up unlinked makes the component fail to instantiate — the single
-/// enforcement point the link-scoped shape admits, applied uniformly.
+/// Builds the [`Linker`] for a component whose grants are `manifest`. A resource-scoped
+/// interface is linked when the manifest **declared** it — i.e. its slot vec is non-empty
+/// — even if every slot is a declined `None`, so `open` returns `none` rather than
+/// trapping (RFC-0015/ADR-0020). A link-scoped interface is linked when the manifest
+/// grants the facility. An imported interface that ends up unlinked makes the component
+/// fail to instantiate — the single enforcement point the link-scoped shape admits.
 pub fn build_linker(
     engine: &Engine,
     manifest: &GrantManifest,
