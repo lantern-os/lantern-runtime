@@ -115,10 +115,13 @@
 - Resource accounting (CPU/memory budgets) tied to scheduling contexts — Wasmtime's
   fuel/epoch-interruption mechanism is the identified attachment point (RFC-0013), not yet
   wired up.
-- Wasmtime's custom-platform embedding hooks (virtual memory, traps, threading) against
-  `lantern-hal`/VSpace-Frame capabilities directly ([ADR-0012](https://github.com/lantern-os/lantern-rfcs/blob/main/adr/0012-vspace-frame-capabilities-and-elf-loader.md))
-  — real, unstarted porting work needed before this crate can run inside a confined
-  `riscv64` process rather than only on a host target.
+- **The confined-execution port** — running this crate inside a confined `riscv64` process
+  and forwarding host calls to real `Keystore`/`Store` services over IPC.
+  [RFC-0018](https://github.com/lantern-os/lantern-rfcs/blob/main/rfcs/0018-confined-execution-port.md)
+  (Draft) is the design: Wasmtime `no_std` + the Pulley bytecode interpreter behind its
+  custom-platform C API (over `Frame` capabilities), the compiler role emitting Pulley
+  `.cwasm`, and `IpcKeystore`/`IpcFilesystem` trait impls using a badged service endpoint
+  + a shared `Frame` (no in-memory IPC buffer). **Phase 3's foundational work** (ADR-0021).
 - Where the compiler role physically runs (`lantern-sdk`/packaging tooling vs. an
   on-device install-time service) and the `.cwasm` artifact's signing-key management story
   — both left to `lantern-sdk`/packaging design, not decided here.
