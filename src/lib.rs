@@ -22,11 +22,10 @@
 //! ([RFC-0014](../https://github.com/lantern-os/lantern-rfcs/blob/main/rfcs/0014-wit-handle-capability-mapping.md)/
 //! [ADR-0018](../https://github.com/lantern-os/lantern-rfcs/blob/main/adr/0018-wit-handle-capability-mapping.md),
 //! [RFC-0016](../https://github.com/lantern-os/lantern-rfcs/blob/main/rfcs/0016-filesystem-wit-interface.md)/
-//! [ADR-0019](../https://github.com/lantern-os/lantern-rfcs/blob/main/adr/0019-filesystem-wit-interface.md))
-//! live in [`host`]: the WIT-handle ⇄ capability mapping, its interfaces
-//! (`lantern:host/keystore` and `lantern:host/filesystem` resource-scoped,
-//! `monotonic-clock` link-scoped), and the link-or-refuse [`host::build_linker`]. Still
-//! custom, not `wasmtime-wasi` (ADR-0017).
+//! [ADR-0019](../https://github.com/lantern-os/lantern-rfcs/blob/main/adr/0019-filesystem-wit-interface.md)) live in
+//! [`host`]: the WIT-handle ⇄ capability mapping, its interfaces (`lantern:host/keystore`
+//! and `lantern:host/filesystem` resource-scoped, `monotonic-clock` link-scoped), and the
+//! link-or-refuse [`host::build_linker`]. Still custom, not `wasmtime-wasi` (ADR-0017).
 //!
 //! What this crate does not yet do (RFC-0013's explicit deferrals):
 //! resource-accounting/fuel metering, and running under anything but a native `std` host
@@ -42,4 +41,6 @@ pub use host::{
     build_linker, FilesystemService, GrantManifest, HostCapability, HostFile,
     InProcessFilesystem, KeystoreService, MonotonicClock, RuntimeState,
 };
-pub use verified::{load_verified_component, runtime_engine, LoadError};
+pub use verified::{
+    deserialize_trusted_component, load_verified_component, runtime_engine, LoadError,
+};

@@ -50,6 +50,23 @@ pub fn load_verified_component(
     signing::verify(public_key, cwasm, signature).map_err(|_| LoadError::BadSignature)?;
     // SAFETY: the signature just verified above is over exactly these bytes, under a
     // public key the caller supplied out of band.
+    unsafe { deserialize_trusted_component(engine, cwasm) }
+}
+
+/// Deserializes a `.cwasm` whose integrity the caller has **already** verified out of band.
+/// The counterpart to [`load_verified_component`] for the RFC-0015 `.lpkg` package flow,
+/// where the Ed25519 signature is over the `BLAKE3(manifest) ‖ BLAKE3(cwasm)` digest (see
+/// `lantern_sdk::package`), not the bare `.cwasm` — so there is no standalone `.cwasm`
+/// signature for [`load_verified_component`] to check.
+///
+/// # Safety
+/// `cwasm` must be bytes this process trusts: verified against a signature under a key it
+/// trusts (e.g. `lantern_sdk::package::verify_package` returned `Ok`). `Component::deserialize`
+/// is documented as unsound on untrusted input.
+pub unsafe fn deserialize_trusted_component(
+    engine: &Engine,
+    cwasm: &[u8],
+) -> Result<Component, LoadError> {
     unsafe { Component::deserialize(engine, cwasm) }.map_err(LoadError::Deserialize)
 }
 

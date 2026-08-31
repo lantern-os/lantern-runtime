@@ -80,6 +80,11 @@
   declined-or-unbound role that reads as `none`, and a non-empty all-`None` vec means the
   interface was *declared* (so it's linked) but every role declined. An empty vec still
   means "not declared" → interface unlinked. 27 tests.
+- **Two helpers for the `lantern-sdk` package flow (RFC-0015):** `compiler::component_import_names`
+  (a component's import identifiers, for the SDK's "imports ≤ declarations" build check —
+  `compiler` feature) and `deserialize_trusted_component` (the raw `Component::deserialize`
+  for callers who verified integrity via `lantern_sdk::package::verify_package`, whose
+  signature is over the manifest+cwasm digest, not the bare `.cwasm`). 28 tests.
 - **Wasmtime pin bumped `24` → `48`** (2026-08-29, maintenance — ADR-0017's decision is
   unchanged). Wasmtime 24 (mid-2024) cannot parse a component produced by a current Rust
   toolchain (`wasm32-wasip2` / `wit-bindgen`), which the `lantern-example-signer` demo

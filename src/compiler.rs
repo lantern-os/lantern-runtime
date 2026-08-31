@@ -23,6 +23,22 @@ pub fn compiler_engine() -> Engine {
     Engine::new(&config).expect("a component-model Config is always valid")
 }
 
+/// The component's import names, e.g. `"lantern:host/keystore@0.1.0"` — for the SDK's
+/// "imports ≤ declarations" build check ([RFC-0015](../https://github.com/lantern-os/lantern-rfcs/blob/main/rfcs/0015-capability-manifest-format.md)).
+/// Validates the component in the process (a malformed one is a `CompileError`).
+pub fn component_import_names(
+    engine: &Engine,
+    wasm_or_wat: &[u8],
+) -> Result<Vec<String>, CompileError> {
+    let component = wasmtime::component::Component::new(engine, wasm_or_wat)
+        .map_err(CompileError::Wasmtime)?;
+    Ok(component
+        .component_type()
+        .imports(engine)
+        .map(|(name, _)| name.to_string())
+        .collect())
+}
+
 /// Compiles a `.wasm`/`.wat` component ahead-of-time and signs the resulting `.cwasm`
 /// artifact under `signing_key`, ready for a runtime-role
 /// [`crate::verified::load_verified_component`] call elsewhere (a different process,
@@ -55,6 +71,24 @@ mod tests {
     /// *fresh* runtime-role engine (a different process in a real deployment), verify,
     /// deserialize, instantiate, and call — proving the split is real, not just a
     /// paper distinction, since the runtime role here never touches the compiler.
+    #[test]
+    fn component_import_names_lists_a_components_imports() {
+        // The clock-reader component from the host tests imports exactly one interface.
+        const IMPORTER: &str = r#"
+            (component
+              (import "lantern:host/monotonic-clock@0.1.0" (instance $c
+                (export "now" (func (result u64)))))
+              (core func $now (canon lower (func $c "now")))
+              (core module $m (import "" "now" (func (result i64)))
+                (func (export "run") (result i64) call 0))
+              (core instance $i (instantiate $m (with "" (instance (export "now" (func $now))))))
+              (func (export "run") (result u64) (canon lift (core func $i "run"))))
+        "#;
+        let names = component_import_names(&compiler_engine(), IMPORTER.as_bytes()).unwrap();
+        assert_eq!(names, ["lantern:host/monotonic-clock@0.1.0"]);
+        assert!(component_import_names(&compiler_engine(), b"not wasm").is_err());
+    }
+
     #[test]
     fn round_trips_through_compile_sign_verify_deserialize_run() {
         let key = SigningKey::from_random_bytes([3u8; SEED_LEN]);
