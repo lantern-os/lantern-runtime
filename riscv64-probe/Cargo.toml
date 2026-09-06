@@ -1,0 +1,38 @@
+[package]
+name = "lantern-runtime-riscv64-probe"
+version = "0.0.0"
+edition = "2021"
+description = "RFC-0018 Part 3 / ADR-0023 groundwork: proves Wasmtime no_std + the Pulley interpreter builds, links, and runs a component on a LanternOS-shaped custom platform. Not shipped; not part of lantern-runtime's own build."
+license = "MIT OR Apache-2.0"
+publish = false
+
+[lib]
+name = "lantern_runtime_riscv64_probe"
+path = "src/lib.rs"
+
+[[bin]]
+name = "lantern-runtime-riscv64-probe"
+path = "src/main.rs"
+# Only built when explicitly asked (`--features bin`), so a host `cargo test` — which
+# runs the execution test through the platform shim — doesn't try to build a
+# `#![no_main]` bare-metal binary for the host.
+required-features = ["bin"]
+
+[features]
+bin = ["dep:lantern-abi"]
+
+[dependencies]
+# The runtime-role no_std feature set (ADR-0023). NO `std`, NO `custom-native-signals`
+# (Pulley surfaces traps as `Result::Err`; enabling native signals would instead demand a
+# signal handler), NO `component-model-async` (so no `wasmtime_fiber_*`).
+wasmtime = { version = "48", default-features = false, features = [
+    "runtime", "component-model", "pulley",
+    "custom-virtual-memory", "custom-sync-primitives",
+] }
+lantern-abi = { git = "https://github.com/lantern-os/lantern-abi", branch = "main", features = ["rt"], optional = true }
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"

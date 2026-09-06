@@ -7,20 +7,24 @@
 //! module's — this file fixes only that it is never the running per-component process.
 
 use lantern_crypto::signing::{SigningKey, SIGNATURE_LEN};
-use wasmtime::{Config, Engine};
+use wasmtime::Engine;
 
 #[derive(Debug)]
 pub enum CompileError {
     Wasmtime(wasmtime::Error),
 }
 
-/// A compiler-role [`Engine`] — Component Model + Cranelift. Distinct from
-/// [`crate::verified::runtime_engine`] on purpose: the two roles never share a `Config`
-/// any more than they share a build.
+/// A compiler-role [`Engine`] — Component Model + Cranelift, emitting **Pulley** bytecode
+/// (`target("pulley64")`, [RFC-0018](../https://github.com/lantern-os/lantern-rfcs/blob/main/rfcs/0018-confined-execution-port.md)/[ADR-0023](../https://github.com/lantern-os/lantern-rfcs/blob/main/adr/0023-wasmtime-no-std-pulley-hosting.md)):
+/// the `.cwasm` this produces is portable across every LanternOS target and is run by the
+/// Pulley interpreter, never native machine code. Cranelift is still what does the
+/// AOT compilation *to* that bytecode — it just targets the Pulley VM instead of a real
+/// ISA. Distinct build and `Config` from [`crate::verified::runtime_engine`] on purpose;
+/// the shared `pulley64` target is the one thing they must agree on, hence
+/// [`crate::verified::pulley_config`].
 pub fn compiler_engine() -> Engine {
-    let mut config = Config::new();
-    config.wasm_component_model(true);
-    Engine::new(&config).expect("a component-model Config is always valid")
+    Engine::new(&crate::verified::pulley_config())
+        .expect("a component-model + pulley64 Config is always valid")
 }
 
 /// The component's import names, e.g. `"lantern:host/keystore@0.1.0"` — for the SDK's

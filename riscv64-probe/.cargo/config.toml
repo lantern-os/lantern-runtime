@@ -1,0 +1,5 @@
+# No `[build] target` line on purpose: `cargo test` builds for the host (it runs
+# the execution test through the platform shim), and the riscv64 link proof is an
+# explicit `cargo build --features bin --target riscv64gc-unknown-none-elf`.
+[target.riscv64gc-unknown-none-elf]
+rustflags = ["-C", "link-arg=-Tlinker.ld"]

@@ -20,14 +20,30 @@ pub enum LoadError {
     Deserialize(wasmtime::Error),
 }
 
-/// Builds the runtime-role [`Engine`]: Component Model on, no compiler configured —
-/// none is linked into this build at all when the `compiler` feature is off (see this
-/// crate's top-level doc). Every runtime-role component is expected to share one engine,
-/// matching Wasmtime's own guidance on how `Engine`s are meant to be reused.
+/// Builds the runtime-role [`Engine`]: Component Model on, **Pulley** the execution
+/// target, no compiler configured — none is linked into this build at all when the
+/// `compiler` feature is off (see this crate's top-level doc). Every runtime-role
+/// component is expected to share one engine, matching Wasmtime's own guidance on how
+/// `Engine`s are meant to be reused.
+///
+/// `target("pulley64")` ([RFC-0018](../https://github.com/lantern-os/lantern-rfcs/blob/main/rfcs/0018-confined-execution-port.md)/[ADR-0023](../https://github.com/lantern-os/lantern-rfcs/blob/main/adr/0023-wasmtime-no-std-pulley-hosting.md)):
+/// execution is the portable Pulley bytecode interpreter — no runtime code generation,
+/// no executable memory, traps surface as `Result::Err` rather than CPU exceptions. The
+/// `.cwasm` a runtime-role process loads must have been compiled for the same target
+/// ([`crate::compiler::compiler_engine`] does), which makes it ISA-portable: one artifact
+/// runs on every LanternOS target. Native-code execution is a Phase 4 item with its own RFC.
 pub fn runtime_engine() -> Engine {
+    Engine::new(&pulley_config()).expect("a component-model + pulley64 Config is always valid")
+}
+
+/// The shared runtime/compiler `Config`: Component Model on, `pulley64` target. Kept in
+/// one place so the two roles cannot drift on the target the `.cwasm` is built for vs. run
+/// on — a mismatch there is a `Deserialize` error, not a subtle bug.
+pub(crate) fn pulley_config() -> Config {
     let mut config = Config::new();
     config.wasm_component_model(true);
-    Engine::new(&config).expect("a component-model-only Config is always valid")
+    config.target("pulley64").expect("pulley64 is a valid Wasmtime target triple");
+    config
 }
 
 /// Verifies `cwasm`'s Ed25519 signature under `public_key` (RFC-0007's ratified primitive,

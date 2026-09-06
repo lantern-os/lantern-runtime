@@ -94,11 +94,36 @@
   `bindgen!`'s `with:` resource key is now `"pkg:ns/iface.resource"` (dot, was slash) and
   `add_to_linker` takes an explicit `HasSelf<T>` type parameter. Full test + clippy matrix
   re-run green.
-- **Host-target only, for now.** This crate builds and tests against a native `std` host
-  target (Wasmtime requires OS-level mmap/threads/signals it doesn't have a LanternOS
-  equivalent for yet) — it does not build for `riscv64gc-unknown-none-elf` the way
-  `lantern-hal`/`lantern-kernel`/`lantern-capabilities`/`lantern-crypto`/`lantern-filesystem`
-  do. See "Next"/"Blocked on".
+- **The lib is host-target only, for now** — it builds and tests against a native `std`
+  host target. The confined-runtime port (RFC-0018 Part 3 / [ADR-0023](https://github.com/lantern-os/lantern-rfcs/blob/main/adr/0023-wasmtime-no-std-pulley-hosting.md))
+  is groundwork-complete, in `riscv64-probe/` rather than the main lib (see below).
+- **RFC-0018 Part 3 groundwork — Wasmtime `no_std` + Pulley proven** (2026-09-06,
+  `riscv64-probe/`):
+  - The runtime + compiler roles now target **`pulley64`**
+    (`verified::pulley_config`, shared by `runtime_engine`/`compiler_engine`): the compiler
+    role AOT-compiles to portable Pulley bytecode, the runtime role runs it through the
+    interpreter — no native codegen, traps as `Result::Err`. All 28 existing tests
+    (compile→sign→verify→deserialize→instantiate→call, the clock e2e) pass unchanged on
+    Pulley; runtime role still free of `cranelift-codegen`/`wasmtime-cranelift`/`regalloc2`
+    (`pulley-interpreter` pulls the tiny `cranelift-{bitset,entity,bforest}` data-structure
+    crates only).
+  - `riscv64-probe/` — a nested crate proving the rest: `wasmtime` 48 built
+    `default-features = false` with `["runtime", "component-model", "pulley",
+    "custom-virtual-memory", "custom-sync-primitives"]` (**not** `custom-native-signals` —
+    Pulley needs no signal handler; a refinement of ADR-0023's feature list) **compiles for
+    `riscv64gc-unknown-none-elf` and links** into a `#![no_std]` / `#![no_main]` binary
+    (`--features bin`, with `lantern-abi`'s `rt`). `src/platform.rs` implements Wasmtime's
+    `sys/custom` C API — `wasmtime_mmap_*`/`mprotect`/`page_size` over a `.bss` bump arena,
+    `wasmtime_tls_*` as one static pointer, `wasmtime_sync_*` as uncontended no-ops,
+    `wasmtime_memory_image_*` as "unsupported" (zero-fill fallback); no `wasmtime_init_traps`,
+    no `wasmtime_fiber_*`. The crate's host `cargo test` deserializes + instantiates + runs
+    an embedded Pulley `.cwasm` **through that shim** (Wasmtime's `custom` path, `std`
+    feature off) → returns 42.
+  - Not done: the arena is a `static`, not `FrameInvoke::Map`-backed; no host imports /
+    `IpcKeystore`/`IpcFilesystem`; the `riscv64` binary links but can't be loaded by
+    `lantern-boot`'s one-megapage-per-segment loader yet (needs the launcher / DTB memory
+    discovery — RFC-0018 Part 1). Regenerate `riscv64-probe/assets/answer.pulley.cwasm`
+    with any `compiler`-feature engine at `target("pulley64")`.
 
 ## Next
 - Wire `monotonic-clock`'s `now` to `lantern-hal`'s real `monotonic_time_ns()` on
@@ -117,17 +142,22 @@
   wired up.
 - **The confined-execution port** — running this crate inside a confined `riscv64` process
   and forwarding host calls to real `Keystore`/`Store` services over IPC.
-  [RFC-0018](https://github.com/lantern-os/lantern-rfcs/blob/main/rfcs/0018-confined-execution-port.md)
-  (Accepted) is the design, fixed by two ADRs:
-  [ADR-0022](https://github.com/lantern-os/lantern-rfcs/blob/main/adr/0022-confined-service-model-and-call-transport.md)
-  — `IpcKeystore`/`IpcFilesystem` trait impls holding a badged service endpoint + a shared
+  [RFC-0018](https://github.com/lantern-os/lantern-rfcs/blob/main/rfcs/0018-confined-execution-port.md) (Accepted) is the design,
+  fixed by two ADRs:
+  [ADR-0022](https://github.com/lantern-os/lantern-rfcs/blob/main/adr/0022-confined-service-model-and-call-transport.md) —
+  `IpcKeystore`/`IpcFilesystem` trait impls holding a badged service endpoint + a shared
   `Frame` view (no in-memory IPC buffer), the services as confined U-mode programs on a new
   non-TCB `lantern-abi` substrate; and
-  [ADR-0023](https://github.com/lantern-os/lantern-rfcs/blob/main/adr/0023-wasmtime-no-std-pulley-hosting.md)
-  — Wasmtime `no_std` + the Pulley bytecode interpreter behind its custom-platform C API
-  (over `Frame` capabilities), the compiler role emitting portable Pulley `.cwasm`, fuel for
-  v0 interruption. Adds nothing to the TCB. **Phase 3's foundational work** (ADR-0021);
-  Part 3 (this crate's `riscv64` build) has no hard dependency on Part 1 (the services port).
+  [ADR-0023](https://github.com/lantern-os/lantern-rfcs/blob/main/adr/0023-wasmtime-no-std-pulley-hosting.md) — Wasmtime `no_std`
+  + the Pulley bytecode interpreter behind its custom-platform C API (over `Frame`
+  capabilities), the compiler role emitting portable Pulley `.cwasm`, fuel for v0
+  interruption. Adds nothing to the TCB. **Phase 3's foundational work** (ADR-0021); Part 3
+  (this crate's `riscv64` build) has no hard dependency on Part 1 (the services port).
+  **Part 3 groundwork is done** (`riscv64-probe/`, see "Done") — Pulley builds, links for
+  `riscv64`, and runs a component through a LanternOS platform shim. Remaining Part 3: a
+  real `Frame`-backed platform layer (not a `.bss` arena), `IpcKeystore`/`IpcFilesystem`
+  over the shared `Frame` (Part 2), fuel wiring, and folding the `no_std` build into this
+  crate's main lib once the services and launcher are ready.
 - Where the compiler role physically runs (`lantern-sdk`/packaging tooling vs. an
   on-device install-time service) and the `.cwasm` artifact's signing-key management story
   — both left to `lantern-sdk`/packaging design, not decided here.
