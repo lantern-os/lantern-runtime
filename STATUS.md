@@ -147,7 +147,12 @@
   [ADR-0022](https://github.com/lantern-os/lantern-rfcs/blob/main/adr/0022-confined-service-model-and-call-transport.md) —
   `IpcKeystore`/`IpcFilesystem` trait impls holding a badged service endpoint + a shared
   `Frame` view (no in-memory IPC buffer), the services as confined U-mode programs on a new
-  non-TCB `lantern-abi` substrate; and
+  non-TCB `lantern-abi` substrate — with the actual marshal/unmarshal wire format each
+  trait impl uses now fixed by
+  [ADR-0024](https://github.com/lantern-os/lantern-rfcs/blob/main/adr/0024-confined-service-call-protocol.md)
+  (Accepted 2026-09-12: the 16-byte request/reply header, the SIGN/ENCRYPT/DECRYPT and
+  READ/WRITE layouts, and `lantern_abi::frame::Channel`, the helper
+  `IpcKeystore`/`IpcFilesystem` call through); and
   [ADR-0023](https://github.com/lantern-os/lantern-rfcs/blob/main/adr/0023-wasmtime-no-std-pulley-hosting.md) — Wasmtime `no_std`
   + the Pulley bytecode interpreter behind its custom-platform C API (over `Frame`
   capabilities), the compiler role emitting portable Pulley `.cwasm`, fuel for v0
