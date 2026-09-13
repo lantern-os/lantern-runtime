@@ -553,6 +553,8 @@ struct RealFs {
     store_ep_cptr: CPtr,
     store_ep: Capability,
     file: lantern_filesystem::FileId,
+    aead_badge: u64,
+    aead_key: KeyId,
 }
 
 fn new_cnode_tcb(state: &mut KernelState) -> (CNodeId, TcbId) {
@@ -601,14 +603,15 @@ fn real_fs(content: Option<&[u8]>) -> RealFs {
     let store_ep = Capability::Endpoint { id: EndpointId(ep_idx as u16), badge: 0, rights: Rights::ALL };
     *state.cnodes.get_mut(store_cnode.0 as usize).unwrap().slot_mut(1).unwrap() = store_ep;
 
-    let mut store = lantern_filesystem::Store::new(0, aead_badge, aead_key);
+    let mut store = lantern_filesystem::Store::new(0);
     let file = store.create().unwrap();
 
-    let mut fs = RealFs { state, keystore, store, store_tcb, store_ep_cptr: 1, store_ep, file };
+    let mut fs = RealFs { state, keystore, store, store_tcb, store_ep_cptr: 1, store_ep, file, aead_badge, aead_key };
 
     if let Some(bytes) = content {
         let write_badge = fs.grant(FileOps::WRITE, 6);
-        fs.store.write(&fs.keystore, write_badge, file, bytes).unwrap();
+        let mut cipher = lantern_filesystem::InProcessCipher::new(&fs.keystore, fs.aead_badge, fs.aead_key);
+        fs.store.write(&mut cipher, write_badge, file, bytes).unwrap();
     }
     fs
 }
@@ -643,6 +646,6 @@ impl RealFs {
 
     fn into_service(self) -> InProcessFilesystem {
         let _ = (self.state, self.store_tcb, self.store_ep_cptr, self.store_ep);
-        InProcessFilesystem::new(self.store, self.keystore)
+        InProcessFilesystem::new(self.store, self.keystore, self.aead_badge, self.aead_key)
     }
 }

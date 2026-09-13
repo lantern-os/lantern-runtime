@@ -208,26 +208,38 @@ pub trait FilesystemService: Send + Sync {
 }
 
 /// The in-process stand-in: a real `lantern_filesystem::Store` plus the
-/// `lantern_crypto::Keystore` its store-wide AEAD key lives in (`Store::read`/`write`
-/// both need it), threaded internally so the [`FilesystemService`] signatures stay clean.
+/// `lantern_crypto::Keystore` its store-wide AEAD key lives in, and the badge/key
+/// `Store::read`/`write` need an
+/// [`lantern_filesystem::cipher::InProcessCipher`] built from (constructed fresh each
+/// call — `Store` itself carries no cipher state of its own, RFC-0018/ADR-0022) —
+/// threaded internally so the [`FilesystemService`] signatures stay clean.
 pub struct InProcessFilesystem {
     store: lantern_filesystem::Store,
     keystore: lantern_crypto::Keystore,
+    aead_badge: u64,
+    aead_key: lantern_crypto::KeyId,
 }
 
 impl InProcessFilesystem {
-    pub fn new(store: lantern_filesystem::Store, keystore: lantern_crypto::Keystore) -> Self {
-        Self { store, keystore }
+    pub fn new(
+        store: lantern_filesystem::Store,
+        keystore: lantern_crypto::Keystore,
+        aead_badge: u64,
+        aead_key: lantern_crypto::KeyId,
+    ) -> Self {
+        Self { store, keystore, aead_badge, aead_key }
     }
 }
 
 impl FilesystemService for InProcessFilesystem {
     fn read(&self, badge: u64, file: FileId, buffer: &mut [u8]) -> Result<usize, StoreError> {
-        self.store.read(&self.keystore, badge, file, buffer)
+        let mut cipher = lantern_filesystem::InProcessCipher::new(&self.keystore, self.aead_badge, self.aead_key);
+        self.store.read(&mut cipher, badge, file, buffer)
     }
 
     fn write(&mut self, badge: u64, file: FileId, data: &[u8]) -> Result<(), StoreError> {
-        self.store.write(&self.keystore, badge, file, data)
+        let mut cipher = lantern_filesystem::InProcessCipher::new(&self.keystore, self.aead_badge, self.aead_key);
+        self.store.write(&mut cipher, badge, file, data)
     }
 }
 
