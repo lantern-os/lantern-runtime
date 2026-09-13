@@ -14,6 +14,7 @@ use std::sync::{Arc, Mutex};
 use super::*;
 use keystore::{ErrorCode, Host, HostKey};
 
+use lantern_capabilities::KernelBackend;
 use lantern_crypto::aead::{NONCE_LEN, TAG_LEN};
 use lantern_crypto::{KeyId, KeyOps, Keystore, KeystoreError};
 
@@ -502,7 +503,7 @@ fn real_crypto() -> RealCrypto {
     let source = Capability::Notification {
         id: NotificationId(notif_idx as u16),
         badge: 0,
-        rights: Rights::READ.union(Rights::GRANT),
+        rights: Rights::WRITE.union(Rights::GRANT),
     };
     *state.cnodes.get_mut(ks_cnode.0 as usize).unwrap().slot_mut(SOURCE_SLOT).unwrap() = source;
 
@@ -511,7 +512,7 @@ fn real_crypto() -> RealCrypto {
     state.tcbs.get_mut(client_tcb.0 as usize).unwrap().cspace = Some(client_cnode);
     *state.cnodes.get_mut(client_cnode.0 as usize).unwrap().slot_mut(1).unwrap() = ep;
 
-    let keystore = Keystore::new(keystore_tcb, 0);
+    let keystore = Keystore::new(0);
     RealCrypto { state, keystore, keystore_tcb, client_tcb, ep_cptr: 1 }
 }
 
@@ -527,9 +528,11 @@ impl RealCrypto {
 
         let badge = self
             .keystore
-            .request_key_access(&mut self.state, key, ops, SOURCE_SLOT, SCRATCH_SLOT)
+            .request_key_access(&mut KernelBackend::new(&mut self.state, self.keystore_tcb), key, ops, SOURCE_SLOT, SCRATCH_SLOT)
             .unwrap();
-        self.keystore.deliver_grant(&mut self.state, self.ep_cptr, SCRATCH_SLOT, (0, 0)).unwrap();
+        self.keystore
+            .deliver_grant(&mut KernelBackend::new(&mut self.state, self.keystore_tcb), self.ep_cptr, SCRATCH_SLOT, (0, 0))
+            .unwrap();
         badge
     }
 
@@ -566,7 +569,7 @@ fn source_notif(state: &mut KernelState, cnode: CNodeId) {
         Capability::Notification {
             id: NotificationId(idx as u16),
             badge: 0,
-            rights: Rights::READ.union(Rights::GRANT),
+            rights: Rights::WRITE.union(Rights::GRANT),
         };
 }
 
@@ -579,12 +582,12 @@ fn real_fs(content: Option<&[u8]>) -> RealFs {
 
     let (ks_cnode, ks_tcb) = new_cnode_tcb(&mut state);
     source_notif(&mut state, ks_cnode);
-    let mut keystore = Keystore::new(ks_tcb, 0);
+    let mut keystore = Keystore::new(0);
     let aead_key = keystore.generate_aead_key([3u8; 32]).unwrap();
     state.scheduler.current = Some(ks_tcb);
     let aead_badge = keystore
         .request_key_access(
-            &mut state,
+            &mut KernelBackend::new(&mut state, ks_tcb),
             aead_key,
             KeyOps::ENCRYPT.union(KeyOps::DECRYPT),
             SOURCE_SLOT,
@@ -598,7 +601,7 @@ fn real_fs(content: Option<&[u8]>) -> RealFs {
     let store_ep = Capability::Endpoint { id: EndpointId(ep_idx as u16), badge: 0, rights: Rights::ALL };
     *state.cnodes.get_mut(store_cnode.0 as usize).unwrap().slot_mut(1).unwrap() = store_ep;
 
-    let mut store = lantern_filesystem::Store::new(store_tcb, 0, aead_badge, aead_key);
+    let mut store = lantern_filesystem::Store::new(0, aead_badge, aead_key);
     let file = store.create().unwrap();
 
     let mut fs = RealFs { state, keystore, store, store_tcb, store_ep_cptr: 1, store_ep, file };
@@ -630,10 +633,10 @@ impl RealFs {
 
         let badge = self
             .store
-            .request_file_access(&mut self.state, file, ops, SOURCE_SLOT, scratch_slot)
+            .request_file_access(&mut KernelBackend::new(&mut self.state, self.store_tcb), file, ops, SOURCE_SLOT, scratch_slot)
             .unwrap();
         self.store
-            .deliver_grant(&mut self.state, self.store_ep_cptr, scratch_slot, (0, 0))
+            .deliver_grant(&mut KernelBackend::new(&mut self.state, self.store_tcb), self.store_ep_cptr, scratch_slot, (0, 0))
             .unwrap();
         badge
     }
