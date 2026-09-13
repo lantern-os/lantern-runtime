@@ -119,11 +119,31 @@
     no `wasmtime_fiber_*`. The crate's host `cargo test` deserializes + instantiates + runs
     an embedded Pulley `.cwasm` **through that shim** (Wasmtime's `custom` path, `std`
     feature off) → returns 42.
-  - Not done: the arena is a `static`, not `FrameInvoke::Map`-backed; no host imports /
-    `IpcKeystore`/`IpcFilesystem`; the `riscv64` binary links but can't be loaded by
-    `lantern-boot`'s one-megapage-per-segment loader yet (needs the launcher / DTB memory
-    discovery — RFC-0018 Part 1). Regenerate `riscv64-probe/assets/answer.pulley.cwasm`
-    with any `compiler`-feature engine at `target("pulley64")`.
+  - ~~Not done: ... the `riscv64` binary links but can't be loaded by `lantern-boot`'s
+    one-megapage-per-segment loader yet (needs the launcher / DTB memory discovery)~~ —
+    **loaded and run under the real kernel for the first time, 2026-09-13**
+    (`lantern-boot-wasm-probe-demo`, `lantern-boot/STATUS.md`): the launcher/DTB
+    prerequisite named here shipped weeks ago, but a real, much more precise blocker
+    surfaced only once someone actually tried to load this binary — the original 64 MiB
+    `.bss` arena alone needed ~32 of `lantern-kernel`'s `MAX_FRAMES` (a hard 16
+    system-wide, `lantern-kernel/src/limits.rs`), categorically too many, not just a lot.
+    Bisected the arena down to the smallest round number the embedded component actually
+    needs (256 KiB — a ~500x cut, found by testing 64 KiB fails, 128 KiB passes) and gave
+    the binary's own heap the same treatment (32 MiB → 2 MiB, one `FrameMega`, via the
+    launcher's existing `ProgramSpec::heap_megapages`) — the whole program now needs only
+    ~4 `FrameMega`s total. Also fixed a real, separate bug while making this observable
+    from S-mode: the probe's result (`run_embedded_answer()`'s `Ok(42)`) was computed but
+    never actually signalled — `let _ = badge;` silently discarded it — now signals one of
+    two distinguishable notifications, this project's usual convention. **4/4 reproducible
+    `Signal'd SUCCESS`** under real QEMU; existing `riscv64-probe` host tests (3) and
+    clippy (host + `riscv64 --features bin`) still green.
+  - **Still not done**: the arena is a `static`, not `FrameInvoke::Map`-backed; no host
+    imports / `IpcKeystore`/`IpcFilesystem`; no real (non-trivial) guest component — this
+    demo's `answer.pulley.cwasm` is still the trivial `(func (export "run") (result s32)
+    → 42)` fixture. Those, not the loader, are what's actually left before the full
+    RFC-0018 integration demo (keystore + store + a confined runtime together). Regenerate
+    `riscv64-probe/assets/answer.pulley.cwasm` with any `compiler`-feature engine at
+    `target("pulley64")`.
 
 ## Next
 - Wire `monotonic-clock`'s `now` to `lantern-hal`'s real `monotonic_time_ns()` on
@@ -149,10 +169,10 @@
   `Frame` view (no in-memory IPC buffer), the services as confined U-mode programs on a new
   non-TCB `lantern-abi` substrate — with the actual marshal/unmarshal wire format each
   trait impl uses now fixed by
-  [ADR-0024](https://github.com/lantern-os/lantern-rfcs/blob/main/adr/0024-confined-service-call-protocol.md)
-  (Accepted 2026-09-12: the 16-byte request/reply header, the SIGN/ENCRYPT/DECRYPT and
-  READ/WRITE layouts, and `lantern_abi::frame::Channel`, the helper
-  `IpcKeystore`/`IpcFilesystem` call through); and
+  [ADR-0024](https://github.com/lantern-os/lantern-rfcs/blob/main/adr/0024-confined-service-call-protocol.md) (Accepted
+  2026-09-12: the 16-byte request/reply header, the SIGN/ENCRYPT/DECRYPT and READ/WRITE
+  layouts, and `lantern_abi::frame::Channel`, the helper `IpcKeystore`/`IpcFilesystem` call
+  through); and
   [ADR-0023](https://github.com/lantern-os/lantern-rfcs/blob/main/adr/0023-wasmtime-no-std-pulley-hosting.md) — Wasmtime `no_std`
   + the Pulley bytecode interpreter behind its custom-platform C API (over `Frame`
   capabilities), the compiler role emitting portable Pulley `.cwasm`, fuel for v0

@@ -31,9 +31,18 @@ pub extern "C" fn wasmtime_page_size() -> usize {
 
 /// Address space for Wasm linear memories and Wasmtime's own mappings. A
 /// `static` so it needs no allocator and no syscalls; `align(4096)` makes every
-/// hand-out page-aligned. 64 MiB is plenty for the probe; the real version
-/// retypes `Untyped` → `Frame` and maps on demand via `lantern-abi`.
-const ARENA_BYTES: usize = 64 * 1024 * 1024;
+/// hand-out page-aligned. **256 KiB** — empirically the smallest round number
+/// above what this probe's trivial component actually needs (found by
+/// bisecting down from an initial 64 MiB guess: `cargo test` first fails
+/// somewhere between 64 KiB and 128 KiB, so this keeps ~2x margin) — small
+/// enough to fit in a single `lantern-kernel` `FrameMega` (2 MiB), unlike the
+/// original 64 MiB guess, which alone would have needed ~32 of the kernel's
+/// only 16 total `MAX_FRAMES` (`lantern-kernel/src/limits.rs`) — categorically
+/// unloadable, not just large. A real (non-trivial) guest component's own
+/// working set is a separate, later question; the real version retypes
+/// `Untyped` → `Frame` and maps on demand via `lantern-abi` instead of a fixed
+/// arena regardless of size.
+const ARENA_BYTES: usize = 256 * 1024;
 
 #[repr(C, align(4096))]
 struct Arena([u8; ARENA_BYTES]);
