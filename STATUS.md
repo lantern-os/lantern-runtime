@@ -144,6 +144,37 @@
     RFC-0018 integration demo (keystore + store + a confined runtime together). Regenerate
     `riscv64-probe/assets/answer.pulley.cwasm` with any `compiler`-feature engine at
     `target("pulley64")`.
+- **The `Frame`-backed platform layer is implemented and live end-to-end (2026-09-15)** —
+  `platform.rs`'s `wasmtime_mmap_new`/`wasmtime_munmap` now have a real `riscv64` backing
+  (`mod backing`, gated `target_arch = "riscv64"` + `feature = "bin"`): a bounded pool of
+  *unmapped* `FrameMega` capabilities plus a capability to the program's own VSpace, granted
+  by `lantern-boot`'s new `ProgramSpec::arena`/`launch::ArenaGrant` and mapped/unmapped by
+  the program itself via real `FrameInvoke::Map`/`Unmap` (`lantern_abi::sys::frame`), on
+  demand, at a reserved virtual range (`ARENA_VADDR`) — not a `.bss` static array. Host
+  `cargo test` keeps the original static-arena fallback unchanged (3 host tests still
+  green); the checked-in `wasm-probe.elf` demo asset is now built *with* the real backing,
+  **4/4 reproducible `Signal'd SUCCESS`**.
+  - **Getting this working for real found — and fixed, same day — a genuine,
+    previously-unexercised `lantern-kernel` bug.** Every prior `FrameInvoke::Map`/`Unmap`
+    call in this project's demos was issued by the launcher as a plain Rust function call
+    pre-`enter_first_thread`, while `satp` is still Bare (no translation) — every physical
+    address is directly addressable then. `ArenaGrant`'s confined-program *self*-mapping is
+    the first real `ecall` into `FrameInvoke` after paging is active, and RISC-V traps don't
+    switch page tables — so S-mode code servicing that `ecall` keeps running under the
+    *program's own* active table, which had no mapping for the `VSpace` root table's own
+    physical memory (bump-allocated from the general-memory `Untyped`, a range loaded
+    programs' own virtual addresses also numerically overlap). Diagnosed live under QEMU via
+    the monitor (`info registers`, same PC/`scause`/`stval` across two reads — a genuine
+    stuck load page fault at the VSpace root's own physical address). A first fix attempt
+    (identity-mapping the whole general-memory range S-mode-only in `map_kernel_shared`)
+    collided with exactly that address reuse (`riscv64-probe`'s own `BASE_ADDRESS =
+    0x8400_0000` sits inside general memory) and was reverted rather than shipped broken.
+    **Fixed properly in `lantern-kernel`**: a new `object::KernelPageTables` — `VSpace`
+    roots and `FrameInvoke::Map`'s on-demand branch pages now live in a small, fixed-size
+    arena embedded in `KernelState` itself (kernel `.bss`), always inside the one megapage
+    every loaded VSpace already maps S-mode-only, instead of the general-memory `Untyped`
+    range. No `lantern-hal` changes, no relinking any service crate. See
+    `lantern-kernel/STATUS.md` and `lantern-boot/STATUS.md` for the full writeup.
 
 ## Next
 - Wire `monotonic-clock`'s `now` to `lantern-hal`'s real `monotonic_time_ns()` on
@@ -179,10 +210,10 @@
   interruption. Adds nothing to the TCB. **Phase 3's foundational work** (ADR-0021); Part 3
   (this crate's `riscv64` build) has no hard dependency on Part 1 (the services port).
   **Part 3 groundwork is done** (`riscv64-probe/`, see "Done") — Pulley builds, links for
-  `riscv64`, and runs a component through a LanternOS platform shim. Remaining Part 3: a
-  real `Frame`-backed platform layer (not a `.bss` arena), `IpcKeystore`/`IpcFilesystem`
-  over the shared `Frame` (Part 2), fuel wiring, and folding the `no_std` build into this
-  crate's main lib once the services and launcher are ready.
+  `riscv64`, and runs a component through a LanternOS platform shim. **The real
+  `Frame`-backed platform layer is implemented and live** (see "Done"). Remaining Part 3:
+  `IpcKeystore`/`IpcFilesystem` over the shared `Frame` (Part 2); fuel wiring; folding the
+  `no_std` build into this crate's main lib once the services and launcher are ready.
 - Where the compiler role physically runs (`lantern-sdk`/packaging tooling vs. an
   on-device install-time service) and the `.cwasm` artifact's signing-key management story
   — both left to `lantern-sdk`/packaging design, not decided here.
