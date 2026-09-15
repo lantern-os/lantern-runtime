@@ -175,6 +175,34 @@
     every loaded VSpace already maps S-mode-only, instead of the general-memory `Untyped`
     range. No `lantern-hal` changes, no relinking any service crate. See
     `lantern-kernel/STATUS.md` and `lantern-boot/STATUS.md` for the full writeup.
+- **`IpcKeystore`/`IpcFilesystem` — the real RFC-0018 Part 2 IPC transport under
+  `KeystoreService`/`FilesystemService` (2026-09-15, `host.rs`)** — both reach a real,
+  confined `keystore-service`/`store-service` over one `lantern_abi::frame::Channel` each,
+  alongside the existing in-process stand-ins (`lantern_crypto::Keystore`'s own
+  `KeystoreService` impl, `InProcessFilesystem`). `IpcKeystore` uses `lantern_crypto::wire`'s
+  already-built client-side codecs (the same ones `lantern-boot`'s `keystore-client` demo
+  uses); `IpcFilesystem` needs none — `lantern_filesystem::wire`'s READ/WRITE are raw bytes,
+  so it calls `Channel::call` directly with the caller's own buffers, no scratch copy, no
+  fixed cap (`Channel::call` chunks transparently past one `Frame` regardless of size).
+  Both use `std::sync::Mutex<Channel>` for `KeystoreService`/most of `FilesystemService`'s
+  `&self` methods — never actually contended (single-hart, non-reentrant, ADR-0010), just
+  avoids a hand-rolled `unsafe impl Sync`. **v0 scope, documented in `IpcKeystore`'s own
+  doc**: one instance wraps exactly one granted `(endpoint, Frame)` relationship — matching
+  every real demo built so far (`keystore-client` only ever holds one key); the trait's own
+  `badge` parameter is accepted but not used to pick between multiple relationships. New
+  `lantern_crypto::KeystoreError::Channel`/`RemoteDenied` variants mirror
+  `lantern_filesystem::StoreError::Channel`/`RemoteCryptoDenied`'s existing shape (built for
+  `lantern_filesystem::cipher::ChannelCipher`, the direct one-layer-down precedent this
+  round's design copies); `host.rs`'s `to_error_code`/`to_fs_error_code` map a genuine
+  remote `ACCESS` denial through to the WIT interface's own `access` code rather than the
+  generic `invalid` bucket. Added `lantern-abi` as a new, unconditional (non-TCB) dependency
+  — first time this crate has needed it. **Not yet wired into an actual confined binary or
+  a new demo** — `lantern-runtime` itself still only builds for a `std` host target (see
+  the module doc's rewritten "Prototype boundary" note); that's "folding the `no_std` build
+  in," still on this list below. 24 tests green (host `cargo test`, `--features compiler`
+  both checked; `IpcKeystore`/`IpcFilesystem` get one `Send + Sync` trait-bound check — a
+  real `Channel` round trip needs a real `ecall`, so, like `ChannelCipher`, no host tests
+  exercise the wire path itself; QEMU is the real proof once there's a demo to run).
 
 ## Next
 - Wire `monotonic-clock`'s `now` to `lantern-hal`'s real `monotonic_time_ns()` on
@@ -211,9 +239,12 @@
   (this crate's `riscv64` build) has no hard dependency on Part 1 (the services port).
   **Part 3 groundwork is done** (`riscv64-probe/`, see "Done") — Pulley builds, links for
   `riscv64`, and runs a component through a LanternOS platform shim. **The real
-  `Frame`-backed platform layer is implemented and live** (see "Done"). Remaining Part 3:
-  `IpcKeystore`/`IpcFilesystem` over the shared `Frame` (Part 2); fuel wiring; folding the
-  `no_std` build into this crate's main lib once the services and launcher are ready.
+  `Frame`-backed platform layer is implemented and live** (see "Done"). **`IpcKeystore`/
+  `IpcFilesystem` over the shared `Frame` (Part 2) are implemented too** (see "Done") — not
+  yet exercised inside a real confined binary. Remaining: fuel wiring; folding the `no_std`
+  build into this crate's main lib (what would let `IpcKeystore`/`IpcFilesystem` actually
+  run instead of just compile); then a real (non-trivial) guest component and a new demo
+  granting the right endpoint/`Frame` for the actual RFC-0018 integration proof.
 - Where the compiler role physically runs (`lantern-sdk`/packaging tooling vs. an
   on-device install-time service) and the `.cwasm` artifact's signing-key management story
   — both left to `lantern-sdk`/packaging design, not decided here.

@@ -219,6 +219,22 @@ fn real_keystore_sign_returns_a_64_byte_signature() {
 }
 
 // ---------------------------------------------------------------------------------
+// IpcKeystore / IpcFilesystem (RFC-0018 Part 2) — no real `Channel` to construct one
+// against on a host target (`lantern_abi::sys::raw` is `unimplemented!()` off `riscv64`,
+// same reasoning `ChannelCipher` has zero host tests for), so what's actually checkable
+// here is the trait bound every other `RuntimeState::with_keystore`/`with_filesystem`
+// caller depends on — a real end-to-end round trip is `lantern-boot` QEMU territory.
+// ---------------------------------------------------------------------------------
+
+#[test]
+fn ipc_keystore_and_ipc_filesystem_satisfy_their_trait_bounds() {
+    fn assert_bounds<T: KeystoreService + 'static>() {}
+    fn assert_fs_bounds<T: FilesystemService + 'static>() {}
+    assert_bounds::<IpcKeystore>();
+    assert_fs_bounds::<IpcFilesystem>();
+}
+
+// ---------------------------------------------------------------------------------
 // Link-or-refuse
 // ---------------------------------------------------------------------------------
 

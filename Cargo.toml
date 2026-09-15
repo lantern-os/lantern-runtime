@@ -15,6 +15,13 @@ lantern-crypto = { git = "https://github.com/lantern-os/lantern-crypto", branch 
 # RFC-0016/ADR-0019: the `lantern:host/filesystem` interface forwards to this crate's
 # real `Store`. A normal (non-TCB) dependency, like `lantern-crypto`.
 lantern-filesystem = { git = "https://github.com/lantern-os/lantern-filesystem", branch = "main" }
+# RFC-0018 Part 2: `IpcKeystore`/`IpcFilesystem` (`host.rs`) reach a confined
+# `keystore-service`/`store-service` over `lantern_abi::frame::Channel` — the real IPC
+# transport under the `KeystoreService`/`FilesystemService` traits, alongside the
+# in-process stand-ins above. Non-TCB, like `lantern-crypto`/`lantern-filesystem`; no
+# features needed (`rt`'s bare-metal program runtime is for a confined program's own
+# entry point, not a library caller like this crate).
+lantern-abi = { git = "https://github.com/lantern-os/lantern-abi", branch = "main" }
 # RFC-0013/ADR-0017: Wasmtime, Component Model surface (ADR-0003). This is the
 # runtime-role feature set only — see the `compiler` feature below for why `cranelift`
 # is deliberately absent here, not merely unused.
