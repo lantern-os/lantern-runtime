@@ -27,19 +27,30 @@
 //! and `lantern:host/filesystem` resource-scoped, `monotonic-clock` link-scoped), and the
 //! link-or-refuse [`host::build_linker`]. Still custom, not `wasmtime-wasi` (ADR-0017).
 //!
-//! What this crate does not yet do (RFC-0013's explicit deferrals):
-//! resource-accounting/fuel metering, and running under anything but a native `std` host
-//! target. Bare-metal `riscv64` hosting needs Wasmtime's custom-platform embedding
-//! support, real porting work RFC-0013 flagged but did not do.
+//! **Two build roles, matching Wasmtime's own two backing modes (`Cargo.toml`'s
+//! `std`/`confined` features, RFC-0018 Part 3):** the `std` host role (default — native
+//! OS, what every test and `lantern-example-signer`'s runner use), and the `confined`
+//! `riscv64` role (`no_std`, Wasmtime's custom-platform hooks in [`platform`] instead of
+//! a real OS — folded in from `lantern-runtime/riscv64-probe`'s own groundwork once
+//! [`host::IpcKeystore`]/[`host::IpcFilesystem`] gave this crate a reason to actually run
+//! confined). Resource-accounting/fuel metering is still RFC-0013's one remaining
+//! explicit deferral.
+
+#![cfg_attr(not(feature = "std"), no_std)]
+
+#[cfg(not(feature = "std"))]
+extern crate alloc;
 
 #[cfg(feature = "compiler")]
 pub mod compiler;
 pub mod host;
+#[cfg(all(target_arch = "riscv64", feature = "confined"))]
+pub mod platform;
 pub mod verified;
 
 pub use host::{
     build_linker, FilesystemService, GrantManifest, HostCapability, HostFile,
-    InProcessFilesystem, KeystoreService, MonotonicClock, RuntimeState,
+    InProcessFilesystem, IpcFilesystem, IpcKeystore, KeystoreService, MonotonicClock, RuntimeState,
 };
 pub use verified::{
     deserialize_trusted_component, load_verified_component, runtime_engine, LoadError,

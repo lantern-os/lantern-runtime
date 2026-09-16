@@ -11,36 +11,63 @@ name = "lantern_runtime"
 path = "src/lib.rs"
 
 [dependencies]
-lantern-crypto = { git = "https://github.com/lantern-os/lantern-crypto", branch = "main" }
+# `default-features = false`: this crate's own use of both — `Keystore::encrypt/decrypt/
+# sign` (`host.rs`'s direct `KeystoreService` impl), `Store::read/write` plus `InProcessCipher`
+# (`InProcessFilesystem`) — is all post-grant operation, never the `Broker`-backed grant-issuing
+# side (`request_key_access`/`deliver_grant`) that needs `kernel-backend`'s `lantern-hal`/
+# `lantern-kernel`. Works unchanged for both roles (`std` host and `confined` riscv64) — no
+# per-role feature split needed for either dependency.
+lantern-crypto = { git = "https://github.com/lantern-os/lantern-crypto", branch = "main", default-features = false }
 # RFC-0016/ADR-0019: the `lantern:host/filesystem` interface forwards to this crate's
-# real `Store`. A normal (non-TCB) dependency, like `lantern-crypto`.
-lantern-filesystem = { git = "https://github.com/lantern-os/lantern-filesystem", branch = "main" }
+# real `Store`. A normal (non-TCB) dependency, like `lantern-crypto`; same
+# `default-features = false` reasoning.
+lantern-filesystem = { git = "https://github.com/lantern-os/lantern-filesystem", branch = "main", default-features = false }
 # RFC-0018 Part 2: `IpcKeystore`/`IpcFilesystem` (`host.rs`) reach a confined
 # `keystore-service`/`store-service` over `lantern_abi::frame::Channel` — the real IPC
 # transport under the `KeystoreService`/`FilesystemService` traits, alongside the
 # in-process stand-ins above. Non-TCB, like `lantern-crypto`/`lantern-filesystem`; no
-# features needed (`rt`'s bare-metal program runtime is for a confined program's own
-# entry point, not a library caller like this crate).
+# features needed (`rt`'s bare-metal program runtime is for a confined *program's own*
+# entry point — a separate future binary crate, not this library).
 lantern-abi = { git = "https://github.com/lantern-os/lantern-abi", branch = "main" }
-# RFC-0013/ADR-0017: Wasmtime, Component Model surface (ADR-0003). This is the
-# runtime-role feature set only — see the `compiler` feature below for why `cranelift`
-# is deliberately absent here, not merely unused.
-wasmtime = { version = "48", default-features = false, features = ["runtime", "component-model", "pulley", "std"] }
+# RFC-0013/ADR-0017: Wasmtime, Component Model surface (ADR-0003). No default features —
+# `std`/`confined` below pick mutually exclusive backing (native OS vs. Wasmtime's
+# custom-platform hooks, RFC-0018 Part 3); see the `compiler` feature for why `cranelift`
+# is separate from both.
+wasmtime = { version = "48", default-features = false, features = ["runtime", "component-model", "pulley"] }
 
 [dev-dependencies]
 # RFC-0014 host-binding tests drive the resource-scoped mapping against a *real*
 # `lantern-crypto` `Keystore` with a real `Broker`-minted badge — the same
 # "prototype against something real, not a simulation" discipline the sibling crates'
-# own test suites follow. Host-target only, like the rest of this crate's tests.
+# own test suites follow. Host-target only, like the rest of this crate's tests — needs
+# `lantern-crypto`'s `kernel-backend` (its default) for the `Broker`-backed grant-issuing
+# side the main dependency above deliberately excludes; Cargo unions dev-dependency
+# features into test builds, so no separate `path =` entry is needed here.
+lantern-crypto = { git = "https://github.com/lantern-os/lantern-crypto", branch = "main" }
 lantern-capabilities = { git = "https://github.com/lantern-os/lantern-capabilities", branch = "main" }
 lantern-hal = { git = "https://github.com/lantern-os/lantern-hal", branch = "main" }
 lantern-kernel = { git = "https://github.com/lantern-os/lantern-kernel", branch = "main" }
 
 [features]
+default = ["std"]
+# The **host role**: a native OS target (host `cargo test`, `lantern-example-signer`'s
+# runner, any `std`-target embedder). Forwards to Wasmtime's own `std` feature. Default,
+# so every existing caller keeps working unchanged.
+std = ["wasmtime/std"]
+# The **confined role** (RFC-0018 Part 3): no_std `riscv64`, Wasmtime's custom-platform
+# hooks (`platform.rs`, folded in from `riscv64-probe`'s own groundwork) instead of a real
+# OS — `wasmtime_mmap_new`/`wasmtime_munmap` etc. backed by real `FrameInvoke::Map`/`Unmap`.
+# Mutually exclusive with `std` in practice (build with `--no-default-features --features
+# confined`) — nothing stops both being enabled at once at the Cargo level, but Wasmtime's
+# own `std` feature and its `custom-virtual-memory`/`custom-sync-primitives` hooks are
+# alternatives, not a union; enabling both is a build-time contradiction, not a supported
+# combination.
+confined = ["wasmtime/custom-virtual-memory", "wasmtime/custom-sync-primitives"]
 # RFC-0013's offline AOT-compiler role. `Component::new`/`Engine::precompile_component`
 # are themselves `#[cfg]`-gated in wasmtime's own source on `cranelift`/`winch` — without
 # this feature they don't exist in this crate's build at all, so the runtime role can't
 # reach them even by mistake. Never enable this feature in the confined per-component
 # runtime process; it exists for the separate, offline compiler role (`compiler` module)
-# and this crate's own round-trip test.
-compiler = ["wasmtime/cranelift", "wasmtime/wat"]
+# and this crate's own round-trip test. Implies `std` — the compiler role is offline
+# packaging tooling, never runs confined.
+compiler = ["std", "wasmtime/cranelift", "wasmtime/wat"]

@@ -33,10 +33,16 @@
 //! direct [`KeystoreService`] impl) every test in this crate still uses. What's still
 //! missing is *this crate itself* running confined: `lantern-runtime` only builds/runs on
 //! a native `std` host target today (`STATUS.md`'s "carried forward" note) — folding a
-//! `no_std`/`riscv64` build in (`lantern-runtime/riscv64-probe`'s own groundwork) is what
-//! would let `IpcKeystore`/`IpcFilesystem` actually run inside a confined component
-//! process instead of just compiling for one. The mapping — badge lookup, per-call
-//! forwarding, error translation, link-or-refuse — is real either way.
+//! `no_std`/`riscv64` build (`Cargo.toml`'s `confined` feature, folded in from
+//! `lantern-runtime/riscv64-probe`'s own groundwork — [`crate::platform`]) is what lets
+//! `IpcKeystore`/`IpcFilesystem` actually run inside a confined component process instead
+//! of just compiling for one; a real confined binary and a new demo granting it a
+//! `keystore-service`/`store-service` endpoint and shared `Frame` are still separate,
+//! not-yet-built work. The mapping — badge lookup, per-call forwarding, error
+//! translation, link-or-refuse — is real either way.
+
+#[cfg(not(feature = "std"))]
+use alloc::{boxed::Box, vec, vec::Vec};
 
 use wasmtime::component::{Linker, Resource, ResourceTable};
 use wasmtime::Engine;
@@ -179,6 +185,29 @@ impl KeystoreService for lantern_crypto::Keystore {
     }
 }
 
+/// A single-hart, non-reentrant interior-mutability cell (ADR-0010), used instead of
+/// `std::sync::Mutex` so [`IpcKeystore`]/[`IpcFilesystem`] work identically in both this
+/// crate's build roles (`std` host, `confined` `riscv64` — `Cargo.toml`'s features) without
+/// a second, `std`-only implementation. `core::cell::RefCell` alone isn't `Sync`, which
+/// `KeystoreService`/`FilesystemService`'s trait bound requires. Never actually
+/// contended in either role: a host `Store<RuntimeState>` embedding is this project's own
+/// single-threaded usage; a confined program is genuinely single-hart — the same
+/// justification `lantern_abi::frame::Channel`'s own `unsafe impl Send` doc already gives.
+struct SingleThreadCell<T>(core::cell::RefCell<T>);
+
+// SAFETY: see the type's own doc.
+unsafe impl<T> Sync for SingleThreadCell<T> {}
+
+impl<T> SingleThreadCell<T> {
+    fn new(value: T) -> Self {
+        Self(core::cell::RefCell::new(value))
+    }
+
+    fn borrow_mut(&self) -> core::cell::RefMut<'_, T> {
+        self.0.borrow_mut()
+    }
+}
+
 /// Reaches a real, confined `keystore-service` over one [`lantern_abi::frame::Channel`] —
 /// RFC-0018 Part 2's actual IPC transport, replacing the in-process
 /// `lantern_crypto::Keystore` impl above once a component runs confined for real. The wire
@@ -187,12 +216,9 @@ impl KeystoreService for lantern_crypto::Keystore {
 /// `KeystoreService` glue around them, mirroring `lantern_filesystem::cipher::ChannelCipher`'s
 /// identical shape one layer down.
 ///
-/// `Mutex`, not `&mut self`, because [`KeystoreService`]'s methods are `&self` (matching
-/// `lantern_crypto::Keystore`'s own shape: one object serving every call). Never actually
-/// contended — a confined program is single-threaded, non-reentrant (ADR-0010), the same
-/// reasoning `Channel`'s own `unsafe impl Send` doc gives; `Mutex` just avoids needing an
-/// `unsafe impl Sync` of our own; `std` is already a given here (unlike a genuinely
-/// confined `no_std` program), so there is no reason to hand-roll one.
+/// [`SingleThreadCell`], not `&mut self`, because [`KeystoreService`]'s methods are `&self`
+/// (matching `lantern_crypto::Keystore`'s own shape: one object serving every call) — see
+/// that type's own doc for why not `std::sync::Mutex`.
 ///
 /// **v0 scope**: one `IpcKeystore` wraps exactly one granted `(endpoint, Frame)`
 /// relationship to one `keystore-service` — matching every real demo built so far
@@ -206,7 +232,7 @@ impl KeystoreService for lantern_crypto::Keystore {
 /// services) needs a per-badge `Channel` lookup instead — not built here, no real grant
 /// shape needs it yet.
 pub struct IpcKeystore {
-    channel: std::sync::Mutex<lantern_abi::frame::Channel>,
+    channel: SingleThreadCell<lantern_abi::frame::Channel>,
 }
 
 impl IpcKeystore {
@@ -215,7 +241,7 @@ impl IpcKeystore {
     /// mapped shared `Frame` for as long as this `IpcKeystore` lives.
     pub unsafe fn new(endpoint: lantern_abi::wire::CPtr, frame: *mut u8) -> Self {
         // SAFETY: forwarded from this function's own contract.
-        Self { channel: std::sync::Mutex::new(unsafe { lantern_abi::frame::Channel::new(endpoint, frame) }) }
+        Self { channel: SingleThreadCell::new(unsafe { lantern_abi::frame::Channel::new(endpoint, frame) }) }
     }
 }
 
@@ -232,7 +258,7 @@ impl KeystoreService for IpcKeystore {
         let len = lantern_crypto::wire::encode_encrypt_request(nonce, aad, buffer, &mut request)
             .expect("request buffer sized exactly for nonce+aad+plaintext");
         let mut reply = vec![0u8; 4 + TAG_LEN + buffer.len()];
-        let mut channel = self.channel.lock().unwrap();
+        let mut channel = self.channel.borrow_mut();
         let (status, reply_len) =
             channel.call(lantern_crypto::wire::OP_ENCRYPT, &request[..len], &mut reply).map_err(KeystoreError::Channel)?;
         if status != lantern_crypto::wire::status::OK {
@@ -260,7 +286,7 @@ impl KeystoreService for IpcKeystore {
         let len = lantern_crypto::wire::encode_decrypt_request(nonce, aad, tag, buffer, &mut request)
             .expect("request buffer sized exactly for nonce+aad+tag+ciphertext");
         let mut reply = vec![0u8; buffer.len()];
-        let mut channel = self.channel.lock().unwrap();
+        let mut channel = self.channel.borrow_mut();
         let (status, reply_len) =
             channel.call(lantern_crypto::wire::OP_DECRYPT, &request[..len], &mut reply).map_err(KeystoreError::Channel)?;
         if status != lantern_crypto::wire::status::OK {
@@ -277,7 +303,7 @@ impl KeystoreService for IpcKeystore {
     fn sign(&self, _badge: u64, _key: KeyId, message: &[u8]) -> Result<Vec<u8>, KeystoreError> {
         let request = lantern_crypto::wire::encode_sign_request(message);
         let mut reply = vec![0u8; lantern_crypto::signing::SIGNATURE_LEN];
-        let mut channel = self.channel.lock().unwrap();
+        let mut channel = self.channel.borrow_mut();
         let (status, reply_len) =
             channel.call(lantern_crypto::wire::OP_SIGN, request, &mut reply).map_err(KeystoreError::Channel)?;
         if status != lantern_crypto::wire::status::OK {
@@ -371,10 +397,10 @@ impl FilesystemService for InProcessFilesystem {
 /// caller's own buffers — no scratch copy, and `Channel::call` chunks transparently past one
 /// `Frame` regardless of size, so there is no fixed cap to size a buffer against either.
 ///
-/// Same `Mutex`-for-`&self` reasoning and the same v0 single-relationship scope as
+/// Same `SingleThreadCell`-for-`&self` reasoning and the same v0 single-relationship scope as
 /// [`IpcKeystore`] — see its doc.
 pub struct IpcFilesystem {
-    channel: std::sync::Mutex<lantern_abi::frame::Channel>,
+    channel: SingleThreadCell<lantern_abi::frame::Channel>,
 }
 
 impl IpcFilesystem {
@@ -382,13 +408,13 @@ impl IpcFilesystem {
     /// As [`lantern_abi::frame::Channel::new`]'s.
     pub unsafe fn new(endpoint: lantern_abi::wire::CPtr, frame: *mut u8) -> Self {
         // SAFETY: forwarded from this function's own contract.
-        Self { channel: std::sync::Mutex::new(unsafe { lantern_abi::frame::Channel::new(endpoint, frame) }) }
+        Self { channel: SingleThreadCell::new(unsafe { lantern_abi::frame::Channel::new(endpoint, frame) }) }
     }
 }
 
 impl FilesystemService for IpcFilesystem {
     fn read(&self, _badge: u64, _file: FileId, buffer: &mut [u8]) -> Result<usize, StoreError> {
-        let mut channel = self.channel.lock().unwrap();
+        let mut channel = self.channel.borrow_mut();
         let (status, len) = channel.call(lantern_filesystem::wire::OP_READ, &[], buffer).map_err(StoreError::Channel)?;
         if status != lantern_filesystem::wire::status::OK {
             return Err(StoreError::RemoteCryptoDenied(status));
@@ -397,7 +423,7 @@ impl FilesystemService for IpcFilesystem {
     }
 
     fn write(&mut self, _badge: u64, _file: FileId, data: &[u8]) -> Result<(), StoreError> {
-        let mut channel = self.channel.lock().unwrap();
+        let mut channel = self.channel.borrow_mut();
         let (status, _len) = channel.call(lantern_filesystem::wire::OP_WRITE, data, &mut []).map_err(StoreError::Channel)?;
         if status != lantern_filesystem::wire::status::OK {
             return Err(StoreError::RemoteCryptoDenied(status));

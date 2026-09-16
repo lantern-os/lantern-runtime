@@ -196,13 +196,49 @@
   round's design copies); `host.rs`'s `to_error_code`/`to_fs_error_code` map a genuine
   remote `ACCESS` denial through to the WIT interface's own `access` code rather than the
   generic `invalid` bucket. Added `lantern-abi` as a new, unconditional (non-TCB) dependency
-  — first time this crate has needed it. **Not yet wired into an actual confined binary or
-  a new demo** — `lantern-runtime` itself still only builds for a `std` host target (see
-  the module doc's rewritten "Prototype boundary" note); that's "folding the `no_std` build
-  in," still on this list below. 24 tests green (host `cargo test`, `--features compiler`
-  both checked; `IpcKeystore`/`IpcFilesystem` get one `Send + Sync` trait-bound check — a
-  real `Channel` round trip needs a real `ecall`, so, like `ChannelCipher`, no host tests
-  exercise the wire path itself; QEMU is the real proof once there's a demo to run).
+  — first time this crate has needed it. 24 tests green (host `cargo test`, `--features
+  compiler` both checked; `IpcKeystore`/`IpcFilesystem` get one `Send + Sync` trait-bound
+  check — a real `Channel` round trip needs a real `ecall`, so, like `ChannelCipher`, no
+  host tests exercise the wire path itself; QEMU is the real proof once there's a demo to
+  run).
+- **The `no_std`/`riscv64` build is folded into this crate's own main lib (2026-09-16,
+  `Cargo.toml`'s new `std`/`confined` features)** — the last piece named in RFC-0018 Part
+  3's "Next": `lantern-runtime/riscv64-probe`'s job (prove the concept) is done; this crate
+  now builds and links for `riscv64gc-unknown-none-elf` itself, `#[cfg_attr(not(feature =
+  "std"), no_std)]` at the crate root, `extern crate alloc` for `Vec`/`Box`. `wasmtime`
+  dropped its always-on `std` feature — `default = ["std"]` keeps every existing host
+  caller (tests, `lantern-example-signer`'s runner) unchanged; `--no-default-features
+  --features confined` instead forwards `wasmtime/custom-virtual-memory`/
+  `custom-sync-primitives` and pulls in [`platform`] (folded in verbatim from
+  `riscv64-probe/src/platform.rs`, dropping its host-test fallback arena — this crate's own
+  host build never needs a custom platform at all, real Wasmtime handles memory there).
+  `lantern-crypto`/`lantern-filesystem` switched to `default-features = false` in
+  `[dependencies]` (this crate's own use of both is post-grant operation only —
+  `Keystore::encrypt/decrypt/sign`, `Store::read/write` — never the `Broker`-backed
+  grant-issuing side `kernel-backend` gates; works unchanged for either role, no per-role
+  split needed) with a `[dev-dependencies]` re-add of `lantern-crypto` (default features)
+  so this crate's own real-`Keystore`-backed tests keep working. **De-risked before
+  committing to the refactor**: a standalone scratch probe confirmed
+  `wasmtime::component::bindgen!` against the real `app` WIT world (resource-scoped
+  `keystore`/`filesystem`, link-scoped `monotonic-clock`) compiles clean for `riscv64gc-
+  unknown-none-elf` with `custom-virtual-memory` — the actual unknown, not the mechanical
+  Cargo/cfg restructuring around it. `IpcKeystore`/`IpcFilesystem` dropped `std::sync::Mutex`
+  for a new `SingleThreadCell` (`core::cell::RefCell` + `unsafe impl Sync`, ADR-0010) so
+  they work identically in both roles without a second implementation. Verified: host
+  `cargo build`/`test` (24 tests) and `--features compiler` (29 tests) unchanged;
+  `--no-default-features --features confined --target riscv64gc-unknown-none-elf` builds
+  clean (dev *and* release) and clippy-clean; a local-path smoke test against
+  `lantern-example-signer`'s runner confirmed the public API shape (`GrantManifest`/
+  `RuntimeState`/`build_linker`/`MonotonicClock`) is unaffected — that runner's own
+  `fixture.rs` has independently drifted from current `lantern-filesystem`/
+  `lantern-capabilities` APIs (`Store::write`'s `&mut Cipher` param, `BrokerBackend`,
+  `InProcessFilesystem`'s 4-arg ctor), pre-existing staleness unrelated to this round, not
+  fixed here. **Still not built**: an actual confined binary (a `_start`/entry point, a
+  `GrantManifest` from real launcher grants, `lantern-abi/rt`'s allocator/panic-handler —
+  belongs in a new, separate binary crate the way `riscv64-probe`'s own `[[bin]]` split
+  works, not this library) and the new demo/loader granting it a real
+  `keystore-service`/`store-service` endpoint and shared `Frame` — the actual RFC-0018
+  integration proof, still ahead.
 
 ## Next
 - Wire `monotonic-clock`'s `now` to `lantern-hal`'s real `monotonic_time_ns()` on
@@ -240,11 +276,15 @@
   **Part 3 groundwork is done** (`riscv64-probe/`, see "Done") — Pulley builds, links for
   `riscv64`, and runs a component through a LanternOS platform shim. **The real
   `Frame`-backed platform layer is implemented and live** (see "Done"). **`IpcKeystore`/
-  `IpcFilesystem` over the shared `Frame` (Part 2) are implemented too** (see "Done") — not
-  yet exercised inside a real confined binary. Remaining: fuel wiring; folding the `no_std`
-  build into this crate's main lib (what would let `IpcKeystore`/`IpcFilesystem` actually
-  run instead of just compile); then a real (non-trivial) guest component and a new demo
-  granting the right endpoint/`Frame` for the actual RFC-0018 integration proof.
+  `IpcFilesystem` over the shared `Frame` (Part 2) are implemented too, and the `no_std`
+  build is folded into this crate's own main lib** (see "Done") — this crate itself now
+  builds and links for `riscv64`, `IpcKeystore`/`IpcFilesystem` included. Remaining: fuel
+  wiring; a new, separate confined-runtime *binary* crate (entry point, allocator, a
+  `GrantManifest` from real launcher grants — this library deliberately doesn't provide
+  one, same split `riscv64-probe`'s own `[lib]`/`[[bin]]` division uses); a real
+  (non-trivial) guest component; and a new demo/loader granting that binary a real
+  `keystore-service`/`store-service` endpoint and shared `Frame` — the actual RFC-0018
+  integration proof, still ahead.
 - Where the compiler role physically runs (`lantern-sdk`/packaging tooling vs. an
   on-device install-time service) and the `.cwasm` artifact's signing-key management story
   — both left to `lantern-sdk`/packaging design, not decided here.
