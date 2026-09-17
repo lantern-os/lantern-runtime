@@ -33,8 +33,19 @@
 //! `riscv64` role (`no_std`, Wasmtime's custom-platform hooks in [`platform`] instead of
 //! a real OS — folded in from `lantern-runtime/riscv64-probe`'s own groundwork once
 //! [`host::IpcKeystore`]/[`host::IpcFilesystem`] gave this crate a reason to actually run
-//! confined). Resource-accounting/fuel metering is still RFC-0013's one remaining
-//! explicit deferral.
+//! confined).
+//!
+//! **Fuel metering is on unconditionally** ([`verified::runtime_engine`]'s `Config`,
+//! [`DEFAULT_FUEL`]) — RFC-0018 Part 3's chosen v0 mechanism for preempting a runaway
+//! component, deterministic and Pulley-native (no timer needed; confirmed empirically, not
+//! assumed — a 2-billion-iteration loop against a tiny fuel budget traps cleanly). Because
+//! it's unconditional, **every caller must call `Store::set_fuel` before running any guest
+//! code** — Wasmtime does not default a budget once fuel metering is on, so a caller that
+//! forgets gets an immediate "out of fuel" trap on the very first metered instruction, not
+//! silent unlimited execution. Every caller in this crate's own tests (and `compiler.rs`'s
+//! round-trip test) does this now; an out-of-tree host embedder (`lantern-example-signer`'s
+//! runner, pinned to an older `lantern-runtime` commit) will need the same one-line change
+//! before its next `lantern-runtime` bump.
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
@@ -53,5 +64,5 @@ pub use host::{
     InProcessFilesystem, IpcFilesystem, IpcKeystore, KeystoreService, MonotonicClock, RuntimeState,
 };
 pub use verified::{
-    deserialize_trusted_component, load_verified_component, runtime_engine, LoadError,
+    deserialize_trusted_component, load_verified_component, runtime_engine, LoadError, DEFAULT_FUEL,
 };

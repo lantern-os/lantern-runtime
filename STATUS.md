@@ -239,6 +239,26 @@
   works, not this library) and the new demo/loader granting it a real
   `keystore-service`/`store-service` endpoint and shared `Frame` — the actual RFC-0018
   integration proof, still ahead.
+- **Fuel wiring — RFC-0018 Part 3's chosen v0 mechanism for preempting a runaway component
+  (2026-09-16, `verified.rs`)** — `pulley_config()` now turns `Config::consume_fuel(true)`
+  on unconditionally, and a new `DEFAULT_FUEL` constant (10,000,000 — generous, explicitly
+  *not tuned*, same philosophy as `lantern-kernel/src/limits.rs`'s fixed capacities; no real
+  non-trivial guest component exists yet to calibrate against). **De-risked empirically
+  before wiring it in** (same discipline as the `bindgen!` no_std check): a scratch WAT
+  component with a 2-billion-iteration loop, run against a 1000-fuel budget, traps cleanly
+  with `"all fuel consumed by WebAssembly"` — confirms Pulley (the interpreter, no
+  Cranelift-generated code) genuinely respects fuel, not assumed from the RFC text alone.
+  Turning `consume_fuel` on unconditionally means **every caller must now call
+  `Store::set_fuel` before running any guest code** — Wasmtime does not default a budget,
+  so a caller that forgets gets an immediate out-of-fuel trap, not silent unlimited
+  execution. Fixed every call site in this crate (3 `host/tests.rs` cases, 1
+  `compiler.rs` round-trip test); the crate-level doc now calls out that an out-of-tree
+  embedder (`lantern-example-signer`'s runner) will need the same one-line fix on its next
+  `lantern-runtime` bump — not fixed here, flagged, matching the fixture-staleness note
+  above (that repo has independent, pre-existing drift already). Two new tests: a runaway
+  loop actually traps (not hangs); the new default budget is enough for a trivial
+  component. 31 tests green with `--features compiler` (24 without); riscv64 `confined`
+  build/clippy unaffected (fuel is Engine/Store config, no platform-specific code).
 
 ## Next
 - Wire `monotonic-clock`'s `now` to `lantern-hal`'s real `monotonic_time_ns()` on
@@ -276,10 +296,11 @@
   **Part 3 groundwork is done** (`riscv64-probe/`, see "Done") — Pulley builds, links for
   `riscv64`, and runs a component through a LanternOS platform shim. **The real
   `Frame`-backed platform layer is implemented and live** (see "Done"). **`IpcKeystore`/
-  `IpcFilesystem` over the shared `Frame` (Part 2) are implemented too, and the `no_std`
-  build is folded into this crate's own main lib** (see "Done") — this crate itself now
-  builds and links for `riscv64`, `IpcKeystore`/`IpcFilesystem` included. Remaining: fuel
-  wiring; a new, separate confined-runtime *binary* crate (entry point, allocator, a
+  `IpcFilesystem` over the shared `Frame` (Part 2) are implemented too, the `no_std` build
+  is folded into this crate's own main lib, and fuel metering is wired in and on by
+  default** (see "Done") — this crate itself now builds and links for `riscv64`,
+  `IpcKeystore`/`IpcFilesystem` included, and every guest execution is fuel-bounded.
+  Remaining: a new, separate confined-runtime *binary* crate (entry point, allocator, a
   `GrantManifest` from real launcher grants — this library deliberately doesn't provide
   one, same split `riscv64-probe`'s own `[lib]`/`[[bin]]` division uses); a real
   (non-trivial) guest component; and a new demo/loader granting that binary a real

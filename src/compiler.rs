@@ -103,6 +103,7 @@ mod tests {
         let component = load_verified_component(&runtime, &cwasm, &key.verifying_key(), &sig).unwrap();
 
         let mut store = wasmtime::Store::new(&runtime, ());
+        store.set_fuel(crate::verified::DEFAULT_FUEL).unwrap();
         let linker = wasmtime::component::Linker::new(&runtime);
         let instance = linker.instantiate(&mut store, &component).unwrap();
         let func = instance.get_typed_func::<(), (i32,)>(&mut store, "run").unwrap();

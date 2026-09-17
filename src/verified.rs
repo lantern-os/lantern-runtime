@@ -21,10 +21,10 @@ pub enum LoadError {
 }
 
 /// Builds the runtime-role [`Engine`]: Component Model on, **Pulley** the execution
-/// target, no compiler configured — none is linked into this build at all when the
-/// `compiler` feature is off (see this crate's top-level doc). Every runtime-role
-/// component is expected to share one engine, matching Wasmtime's own guidance on how
-/// `Engine`s are meant to be reused.
+/// target, fuel metering on (see [`DEFAULT_FUEL`]), no compiler configured — none is
+/// linked into this build at all when the `compiler` feature is off (see this crate's
+/// top-level doc). Every runtime-role component is expected to share one engine, matching
+/// Wasmtime's own guidance on how `Engine`s are meant to be reused.
 ///
 /// `target("pulley64")` ([RFC-0018](../https://github.com/lantern-os/lantern-rfcs/blob/main/rfcs/0018-confined-execution-port.md)/[ADR-0023](../https://github.com/lantern-os/lantern-rfcs/blob/main/adr/0023-wasmtime-no-std-pulley-hosting.md)):
 /// execution is the portable Pulley bytecode interpreter — no runtime code generation,
@@ -36,13 +36,28 @@ pub fn runtime_engine() -> Engine {
     Engine::new(&pulley_config()).expect("a component-model + pulley64 Config is always valid")
 }
 
-/// The shared runtime/compiler `Config`: Component Model on, `pulley64` target. Kept in
-/// one place so the two roles cannot drift on the target the `.cwasm` is built for vs. run
-/// on — a mismatch there is a `Deserialize` error, not a subtle bug.
+/// A generous, **not tuned**, starting fuel budget (RFC-0018 Part 3's "fuel for v0
+/// interruption" — deterministic preemption of a runaway component, no timer needed;
+/// Pulley genuinely respects it, confirmed empirically: a 2-billion-iteration loop against
+/// a 1000-fuel budget traps with `"all fuel consumed by WebAssembly"`, not a hang). Every
+/// `Store` this crate's engine runs against needs `Store::set_fuel` called explicitly —
+/// Wasmtime does not default one in once [`Config::consume_fuel`] is on, so a caller that
+/// forgets gets an immediate "out of fuel" trap on the very first metered instruction, not
+/// silent unlimited execution; this constant exists so callers have a sane default to reach
+/// for instead of inventing their own number. Same "generous, not tuned, revisit when this
+/// phase exits" philosophy as `lantern-kernel/src/limits.rs`'s own fixed capacities — not
+/// calibrated against any real component's actual instruction count yet, since none of the
+/// confined-runtime work has a real non-trivial guest component to measure against.
+pub const DEFAULT_FUEL: u64 = 10_000_000;
+
+/// The shared runtime/compiler `Config`: Component Model on, `pulley64` target, fuel
+/// metering on. Kept in one place so the two roles cannot drift on the target the `.cwasm`
+/// is built for vs. run on — a mismatch there is a `Deserialize` error, not a subtle bug.
 pub(crate) fn pulley_config() -> Config {
     let mut config = Config::new();
     config.wasm_component_model(true);
     config.target("pulley64").expect("pulley64 is a valid Wasmtime target triple");
+    config.consume_fuel(true);
     config
 }
 

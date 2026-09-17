@@ -265,6 +265,7 @@ mod through_wasmtime {
         let component = wasmtime::component::Component::new(&engine, EMPTY_WAT).unwrap();
         let linker = build_linker(&engine, &GrantManifest::nothing()).unwrap();
         let mut store = wasmtime::Store::new(&engine, RuntimeState::new(GrantManifest::nothing()));
+        store.set_fuel(crate::verified::DEFAULT_FUEL).unwrap();
         assert!(linker.instantiate(&mut store, &component).is_ok());
     }
 
@@ -279,6 +280,7 @@ mod through_wasmtime {
         };
         let linker = build_linker(&engine, &manifest).unwrap();
         let mut store = wasmtime::Store::new(&engine, RuntimeState::new(manifest));
+        store.set_fuel(crate::verified::DEFAULT_FUEL).unwrap();
         let instance = linker.instantiate(&mut store, &component).unwrap();
         let run = instance.get_typed_func::<(), (u64,)>(&mut store, "run").unwrap();
         assert_eq!(run.call(&mut store, ()).unwrap().0, 1_234_567);
@@ -292,10 +294,54 @@ mod through_wasmtime {
         let manifest = GrantManifest::nothing();
         let linker = build_linker(&engine, &manifest).unwrap();
         let mut store = wasmtime::Store::new(&engine, RuntimeState::new(manifest));
+        store.set_fuel(crate::verified::DEFAULT_FUEL).unwrap();
         assert!(
             linker.instantiate(&mut store, &component).is_err(),
             "an unlinked import must refuse instantiation",
         );
+    }
+
+    #[test]
+    fn a_runaway_loop_traps_on_fuel_exhaustion_not_a_hang() {
+        const SPIN_WAT: &str = r#"
+            (component
+              (core module $m
+                (func (export "spin") (result i32)
+                  (local $i i32)
+                  (local.set $i (i32.const 0))
+                  (block $exit
+                    (loop $again
+                      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+                      (br_if $exit (i32.eq (local.get $i) (i32.const 2000000000)))
+                      (br $again)))
+                  (local.get $i)))
+              (core instance $ci (instantiate $m))
+              (func (export "spin") (result s32) (canon lift (core func $ci "spin"))))
+        "#;
+        let engine = runtime_engine();
+        let component = wasmtime::component::Component::new(&engine, SPIN_WAT).unwrap();
+        let linker = build_linker(&engine, &GrantManifest::nothing()).unwrap();
+        let mut store = wasmtime::Store::new(&engine, RuntimeState::new(GrantManifest::nothing()));
+        store.set_fuel(1000).unwrap();
+        let instance = linker.instantiate(&mut store, &component).unwrap();
+        let spin = instance.get_typed_func::<(), (i32,)>(&mut store, "spin").unwrap();
+        let err = spin.call(&mut store, ()).expect_err("2 billion loop iterations must exhaust 1000 fuel");
+        // The "all fuel consumed" message is on the error's `source()` chain, not its own
+        // top-level `Display` — `{:?}` walks the whole chain, `{err}` alone would not.
+        assert!(
+            format!("{err:?}").contains("all fuel consumed"),
+            "expected a fuel-exhaustion trap, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn a_generous_default_fuel_budget_is_enough_for_a_trivial_component() {
+        let engine = runtime_engine();
+        let component = wasmtime::component::Component::new(&engine, EMPTY_WAT).unwrap();
+        let linker = build_linker(&engine, &GrantManifest::nothing()).unwrap();
+        let mut store = wasmtime::Store::new(&engine, RuntimeState::new(GrantManifest::nothing()));
+        store.set_fuel(crate::verified::DEFAULT_FUEL).unwrap();
+        assert!(linker.instantiate(&mut store, &component).is_ok());
     }
 }
 
