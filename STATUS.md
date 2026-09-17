@@ -259,6 +259,14 @@
   loop actually traps (not hangs); the new default budget is enough for a trivial
   component. 31 tests green with `--features compiler` (24 without); riscv64 `confined`
   build/clippy unaffected (fuel is Engine/Store config, no platform-specific code).
+- **Resolved the `KeyId` construction gap a real confined-runtime binary would hit
+  (2026-09-17)** — `lantern_crypto::KeyId::from_raw` (pushed separately, see that repo's
+  STATUS.md) gives a caller with no real `Keystore` to mint one from (an `IpcKeystore`
+  user) a documented, always-panic-safe way to construct a `HostCapability::keystore_key`.
+  `HostCapability::keystore_key`'s own doc here now points at it. Checked before deciding,
+  not assumed: `KeyId`'s field privacy was never a safety-critical invariant (bounds-checked
+  lookup, equality-checked authorization) — this was a real design question worth a
+  deliberate call, not a `pub fn from_raw` added unilaterally.
 
 ## Next
 - Wire `monotonic-clock`'s `now` to `lantern-hal`'s real `monotonic_time_ns()` on

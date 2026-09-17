@@ -97,7 +97,11 @@ pub enum ServiceEndpoint {
 impl HostCapability {
     /// A capability to one key in the crypto service, scoped to whatever operation
     /// subset the manifest granted for `badge` (the crypto service enforces the subset;
-    /// this record does not know it).
+    /// this record does not know it). For an [`IpcKeystore`] backend, `badge`/`key` are
+    /// never actually consulted (see that type's own doc) — a caller with no real
+    /// `lantern_crypto::Keystore` to mint a `KeyId` from (a confined runtime process holds
+    /// a badged `Channel`, not a `Keystore`) can use `KeyId::from_raw` (always panic-safe,
+    /// see its own doc) rather than needing one.
     pub fn keystore_key(badge: u64, key: KeyId) -> Self {
         Self { badge, key, service: ServiceEndpoint::Keystore }
     }
