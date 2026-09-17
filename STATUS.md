@@ -267,6 +267,31 @@
   not assumed: `KeyId`'s field privacy was never a safety-critical invariant (bounds-checked
   lookup, equality-checked authorization) — this was a real design question worth a
   deliberate call, not a `pub fn from_raw` added unilaterally.
+- **`confined-probe-guest` — RFC-0018's first real (non-trivial) confined guest component,
+  proven end to end against a real `Keystore` (2026-09-17)** — a new sibling crate, genuine
+  Rust compiled via `wasm32-wasip2`/`wit-bindgen` (no extra tooling needed, matching
+  `reference_wasm_component_toolchain`'s own notes), importing exactly one capability-gated
+  interface — `lantern:host/keystore` — deliberately narrower than
+  `lantern-example-signer`'s own three-interface `signer` world (whose `attest`/`probe`
+  this crate's own `probe` borrows its keystore-calling shape from, with attribution): no
+  real confined `store-service`/filesystem grant or link-scoped clock grant needed just to
+  instantiate. Precompiled to `pulley64` by this crate's own `compiler` role
+  (`compiler_engine`/`precompile_and_sign`) into the checked-in `assets/probe.pulley.cwasm`
+  (regenerate the same way `riscv64-probe`'s own fixture is regenerated: any
+  `compiler`-feature engine at `target("pulley64")`, here against `confined-probe-guest`'s
+  `wasm32-wasip2` release output). **New test
+  (`confined_probe_guest_signs_through_a_real_keystore`) proves the whole pipeline for
+  real**: component instantiation, the resource-scoped `keystore` grant, and an actual
+  `sign` call landing through the generated `Host` trait onto a real, `Broker`-granted
+  in-process `Keystore` — with the ungranted slot correctly reading back `none`. Needed
+  `Linker::define_unknown_imports_as_traps` (a `std` `wasm32-wasip2` cdylib imports
+  ~10 `wasi:cli/*`/`wasi:io/*` interfaces from its own startup machinery even when unused —
+  known, documented friction, not a surprise). **What this proves and doesn't**: the wiring
+  *shape* (a real, non-trivial guest genuinely calling through the resource-scoped mapping)
+  is now demonstrated — the *transport* (`IpcKeystore` over a real `Channel`) still isn't;
+  this test uses the in-process `Keystore` backend, the same as every other keystore test in
+  this file. 32 tests green with `--features compiler`; riscv64 `confined` build/clippy
+  unaffected (this is a host-only test, gated with everything else `compiler` implies).
 
 ## Next
 - Wire `monotonic-clock`'s `now` to `lantern-hal`'s real `monotonic_time_ns()` on
@@ -305,15 +330,19 @@
   `riscv64`, and runs a component through a LanternOS platform shim. **The real
   `Frame`-backed platform layer is implemented and live** (see "Done"). **`IpcKeystore`/
   `IpcFilesystem` over the shared `Frame` (Part 2) are implemented too, the `no_std` build
-  is folded into this crate's own main lib, and fuel metering is wired in and on by
-  default** (see "Done") — this crate itself now builds and links for `riscv64`,
-  `IpcKeystore`/`IpcFilesystem` included, and every guest execution is fuel-bounded.
-  Remaining: a new, separate confined-runtime *binary* crate (entry point, allocator, a
-  `GrantManifest` from real launcher grants — this library deliberately doesn't provide
-  one, same split `riscv64-probe`'s own `[lib]`/`[[bin]]` division uses); a real
-  (non-trivial) guest component; and a new demo/loader granting that binary a real
-  `keystore-service`/`store-service` endpoint and shared `Frame` — the actual RFC-0018
-  integration proof, still ahead.
+  is folded into this crate's own main lib, fuel metering is wired in and on by default,
+  and a real (non-trivial) guest component exists and is proven against a real `Keystore`**
+  (see "Done", `confined-probe-guest`) — this crate itself now builds and links for
+  `riscv64`, `IpcKeystore`/`IpcFilesystem` included, every guest execution is
+  fuel-bounded, and the wiring shape for a genuine resource-scoped host call is
+  demonstrated end to end (in-process transport). Remaining: a new, separate
+  confined-runtime *binary* crate (entry point, allocator, a `GrantManifest` built with
+  `KeyId::from_raw` from real launcher grants — this library deliberately doesn't provide
+  one, same split `riscv64-probe`'s own `[lib]`/`[[bin]]` division uses); and a new
+  demo/loader granting that binary a real `keystore-service` endpoint and shared `Frame`
+  (+ an `ArenaGrant` for its own Wasm memory) — proving `IpcKeystore` over a real `Channel`
+  with `confined-probe-guest` as the actual guest, the last piece of the RFC-0018
+  integration proof.
 - Where the compiler role physically runs (`lantern-sdk`/packaging tooling vs. an
   on-device install-time service) and the `.cwasm` artifact's signing-key management story
   — both left to `lantern-sdk`/packaging design, not decided here.

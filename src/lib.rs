@@ -46,6 +46,17 @@
 //! round-trip test) does this now; an out-of-tree host embedder (`lantern-example-signer`'s
 //! runner, pinned to an older `lantern-runtime` commit) will need the same one-line change
 //! before its next `lantern-runtime` bump.
+//!
+//! **`confined-probe-guest`** (a sibling crate, not part of this workspace's own build) is
+//! RFC-0018's first real (non-trivial) confined guest component — genuine Rust, compiled
+//! via `wasm32-wasip2`/`wit-bindgen`, precompiled to `pulley64` by this crate's own
+//! `compiler` role, importing the real resource-scoped `keystore` interface. Proven here
+//! (`host::tests::through_wasmtime::confined_probe_guest_signs_through_a_real_keystore`)
+//! against a real, `Broker`-granted in-process `Keystore` — the wiring shape (component
+//! instantiation, a resource-scoped grant, a real `sign` call through the generated `Host`
+//! trait) is what's new, not the transport; [`host::IpcKeystore`] over a real `Channel`
+//! still needs an actual confined `riscv64` process and `keystore-service` to prove end to
+//! end, not a host test.
 
 #![cfg_attr(not(feature = "std"), no_std)]
 

@@ -1,0 +1,23 @@
+[package]
+name = "lantern-runtime-confined-probe-guest"
+version = "0.0.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+publish = false
+description = "RFC-0018's first real (non-trivial) confined guest component -- imports lantern:host/keystore and nothing else. Not shipped; not part of lantern-runtime's own build."
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# Guest-side WIT bindings generator. This crate's only dependency, matching
+# lantern-example-signer's own app/ crate (this probe's keystore-calling shape is
+# borrowed from its `attest`, simplified to just keystore).
+wit-bindgen = "0.57"
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true
+codegen-units = 1
+panic = "abort"

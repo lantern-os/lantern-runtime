@@ -1,0 +1,16 @@
+package lantern:confined-probe;
+
+/// RFC-0018's first real (non-trivial) confined guest component: imports exactly one
+/// capability-gated host interface — `lantern:host/keystore` — and nothing else. No
+/// `wasi:*` it can call, no ambient authority. Deliberately narrower than
+/// `lantern-example-signer`'s own three-interface `signer` world (which this crate's
+/// `probe` function borrows its keystore-calling shape from, with attribution) — proving
+/// the resource-scoped keystore path specifically, without also needing a real confined
+/// `store-service`/filesystem grant or a link-scoped clock grant to instantiate at all.
+world probe {
+    import lantern:host/keystore@0.1.0;
+
+    /// A one-line report. Starts with `"ok: "` on success, `"error: "` on any capability
+    /// denial or malformed-request rejection — the guest's only failure channel.
+    export probe: func() -> string;
+}

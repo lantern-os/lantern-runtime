@@ -343,6 +343,57 @@ mod through_wasmtime {
         store.set_fuel(crate::verified::DEFAULT_FUEL).unwrap();
         assert!(linker.instantiate(&mut store, &component).is_ok());
     }
+
+    /// RFC-0018's first real (non-trivial) confined guest component
+    /// (`lantern-runtime/confined-probe-guest`) — genuinely compiled from Rust via
+    /// `wasm32-wasip2`/`wit-bindgen`, precompiled to `pulley64` by this crate's own
+    /// `compiler` role, imports the real resource-scoped `keystore` interface. Proven here
+    /// against the in-process `Keystore` backend (a real `Broker`-mediated grant, the same
+    /// `real_crypto()`/`grant` flow every other keystore test in this file uses) — the
+    /// wiring shape (component instantiation, resource-scoped grant, a real `sign` call
+    /// through the generated `Host` trait) is what's genuinely new here, not the transport;
+    /// `IpcKeystore` over a real `Channel` needs a real confined `riscv64` process and
+    /// `keystore-service` to prove end to end, not a host test — see
+    /// `lantern-runtime/STATUS.md`'s "Next" for that remaining step.
+    #[test]
+    fn confined_probe_guest_signs_through_a_real_keystore() {
+        let cwasm = std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/confined-probe-guest/assets/probe.pulley.cwasm"
+        ))
+        .expect("regenerate via lantern-runtime's own compiler role against confined-probe-guest's wasm32-wasip2 output");
+
+        let mut rc = real_crypto();
+        let key = rc.keystore.generate_signing_key([4u8; lantern_crypto::signing::SEED_LEN]).unwrap();
+        let badge = rc.grant(key, KeyOps::SIGN);
+        let keystore = rc.into_keystore();
+
+        let engine = runtime_engine();
+        // SAFETY: `cwasm` is this crate's own build output, freshly regenerated from
+        // trusted source in this same repo, not untrusted network input.
+        let component = unsafe { crate::deserialize_trusted_component(&engine, &cwasm) }.unwrap();
+
+        let manifest = GrantManifest {
+            keystore_keys: vec![Some(HostCapability::keystore_key(badge, key))],
+            ..Default::default()
+        };
+        let mut linker = build_linker(&engine, &manifest).unwrap();
+        // A `std` `wasm32-wasip2` cdylib imports ~10 `wasi:cli/*`/`wasi:io/*` interfaces
+        // from its own startup/panic machinery even when the guest code never calls them
+        // (`reference_wasm_component_toolchain` memory; `lantern-example-signer`'s runner
+        // does the same) — trap stubs for anything this linker doesn't already know how to
+        // satisfy, rather than needing to actually implement WASI.
+        linker.define_unknown_imports_as_traps(&component).unwrap();
+        let state = RuntimeState::new(manifest).with_keystore(Box::new(keystore));
+        let mut store = wasmtime::Store::new(&engine, state);
+        store.set_fuel(crate::verified::DEFAULT_FUEL).unwrap();
+
+        let instance = linker.instantiate(&mut store, &component).unwrap();
+        let probe = instance.get_typed_func::<(), (String,)>(&mut store, "probe").unwrap();
+        let (report,) = probe.call(&mut store, ()).unwrap();
+        assert!(report.starts_with("ok: "), "expected a successful report, got: {report}");
+        assert!(report.contains("keystore.open(1)=none"), "an ungranted slot must read back none: {report}");
+    }
 }
 
 // ---------------------------------------------------------------------------------
