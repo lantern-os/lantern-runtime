@@ -324,8 +324,28 @@
   granted). Also found and fixed a real `lantern-hal` bug on the way (a second-started
   program's `arg0` was always zeroed — see `lantern-hal/STATUS.md`). 32 tests green with
   `--features compiler`; clippy clean host, `--features compiler`, and riscv64 `confined`.
-  **What this does not prove yet**: the `filesystem` path — `IpcFilesystem` has still never
-  carried a guest's call to a real confined `store-service`.
+  The `filesystem` half followed the same day (next entry).
+- **The RFC-0018 integration proof, filesystem half — `IpcFilesystem` carries a confined
+  guest's file I/O across three confined programs (2026-10-12).** New guest crate
+  `confined-fs-guest/` (`wasm32-wasip2`, a `fs-probe` world importing only
+  `lantern:host/filesystem`; precompiled to `assets/fs-probe.pulley.cwasm`): checks that a
+  fresh file reads empty, writes and reads back its content, has an oversized write refused
+  `invalid` with the content left intact, and sees slot 1 as `none`. Proven in-process
+  first (`confined_fs_guest_round_trips_through_a_real_store`, against a real `Store`), then
+  confined: `confined-runtime/` is now a small lib (shared grant request, guest hosting,
+  stage-coded signalling) plus two binaries — `lantern-confined-runtime` (keystore, as
+  before) and `lantern-confined-runtime-fs`, whose slot 0 is `IpcFilesystem` (built with
+  `lantern_filesystem::FileId::from_raw`, the `KeyId::from_raw` twin) to a confined
+  `store-service` that seals every block through its own grant on a confined
+  `keystore-service`. `lantern-boot-runtime-fs-demo`: **6/6 reproducible `SUCCESS`**
+  (`-m 64M`/`128M`×4/`512M`), ~630 KiB heap. **Found a real `lantern-kernel` scheduler
+  bug**: a thread could sit in the ready queue twice, and the stale entry later "resumed"
+  it while it was still blocked in `Recv` — first seen here as the store's decrypt
+  returning `FAILED` only when the guest read the empty file before writing (see
+  `lantern-kernel/STATUS.md`). 33 tests green with `--features compiler`; clippy clean
+  everywhere including both guests. Both RFC-0018 host interfaces that exist —
+  `keystore` and `filesystem` — now have a confined end-to-end proof; `monotonic-clock`
+  (link-scoped, no service behind it) is still the host shim.
 
 ## Next
 - Wire `monotonic-clock`'s `now` to `lantern-hal`'s real `monotonic_time_ns()` on
@@ -372,11 +392,14 @@
   demonstrated end to end. **The keystore half of the integration proof is done
   (2026-10-12, see "Done")**: a confined runtime process hosts `confined-probe-guest`
   with its `keystore` grant served over a real `Channel` by a separately confined
-  `keystore-service`. Remaining: the same proof for `filesystem` (a guest importing
-  `lantern:host/filesystem`, `IpcFilesystem` to a confined `store-service` — whose own
-  AEAD already goes through `keystore-service`, `lantern-boot-store-demo`); a signed
-  `.lpkg` loaded through `load_verified_component` rather than an embedded trusted
-  `.cwasm`; and a launch-binder flow replacing the demo's "first caller gets the grant".
+  `keystore-service`; **the filesystem half too (same day)**: `confined-fs-guest` over
+  `IpcFilesystem` to a confined `store-service` sealing through a confined
+  `keystore-service`. Remaining: a signed `.lpkg` loaded through `load_verified_component`
+  rather than an embedded trusted `.cwasm` (and a runtime that receives its guest from the
+  launcher instead of embedding one per binary); a launch-binder flow replacing the demos'
+  "first caller gets the grant"; one runtime hosting both interfaces at once (needs a
+  multi-grant `keystore-service` and more kernel capacity — `runtime-fs-demo` already
+  sits at `MAX_FRAMES` 16/16 and 31/32 root CNode slots).
 - Where the compiler role physically runs (`lantern-sdk`/packaging tooling vs. an
   on-device install-time service) and the `.cwasm` artifact's signing-key management story
   — both left to `lantern-sdk`/packaging design, not decided here.

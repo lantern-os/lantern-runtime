@@ -569,6 +569,43 @@ mod fs {
         assert!(open(&mut state, 0).is_none());
         assert!(open(&mut state, 1).is_none());
     }
+
+    /// `confined-fs-guest` — the filesystem twin of
+    /// `confined_probe_guest_signs_through_a_real_keystore`: a real Rust guest importing
+    /// only `lantern:host/filesystem`, against a real `Store`-granted file. The same guest
+    /// runs confined, over `IpcFilesystem`, in `lantern-boot`'s `runtime-fs-demo`.
+    #[test]
+    fn confined_fs_guest_round_trips_through_a_real_store() {
+        let cwasm = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/confined-fs-guest/assets/fs-probe.pulley.cwasm"))
+            .expect("regenerate via `cargo run --example precompile --features compiler`");
+
+        let mut fs = real_fs(None);
+        let badge = fs.grant(FileOps::READ.union(FileOps::WRITE), 7);
+        let file = fs.file;
+
+        let engine = crate::verified::runtime_engine();
+        // SAFETY: `cwasm` is this crate's own build output, regenerated from trusted
+        // source in this same repo, not untrusted input.
+        let component = unsafe { crate::deserialize_trusted_component(&engine, &cwasm) }.unwrap();
+
+        let manifest = GrantManifest {
+            filesystem_files: vec![Some(HostFile::filesystem_file(badge, file))],
+            ..Default::default()
+        };
+        let mut linker = build_linker(&engine, &manifest).unwrap();
+        // `std` `wasm32-wasip2` startup imports — see the keystore twin of this test.
+        linker.define_unknown_imports_as_traps(&component).unwrap();
+        let state = RuntimeState::new(manifest).with_filesystem(Box::new(fs.into_service()));
+        let mut store = wasmtime::Store::new(&engine, state);
+        store.set_fuel(crate::verified::DEFAULT_FUEL).unwrap();
+
+        let instance = linker.instantiate(&mut store, &component).unwrap();
+        let probe = instance.get_typed_func::<(), (String,)>(&mut store, "probe").unwrap();
+        let (report,) = probe.call(&mut store, ()).unwrap();
+        assert!(report.starts_with("ok: "), "expected a successful report, got: {report}");
+        assert!(report.contains("oversized write=invalid"), "{report}");
+        assert!(report.contains("filesystem.open(1)=none"), "an ungranted slot must read back none: {report}");
+    }
 }
 
 // ---------------------------------------------------------------------------------

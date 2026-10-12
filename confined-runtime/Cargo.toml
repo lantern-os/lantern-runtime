@@ -2,13 +2,26 @@
 name = "lantern-confined-runtime"
 version = "0.0.0"
 edition = "2021"
-description = "RFC-0018's confined lantern-runtime process: a standalone riscv64 program that hosts a real Wasm guest component (confined-probe-guest) under Wasmtime no_std + Pulley, with its lantern:host/keystore grant backed by IpcKeystore over a real shared Frame to a separately confined keystore-service. Loaded by lantern-boot's runtime demo (src/runtime_demo/)."
+description = "RFC-0018's confined lantern-runtime process: standalone riscv64 programs that host a real Wasm guest component under Wasmtime no_std + Pulley, its host grant served over a real shared Frame by a separately confined service -- keystore (IpcKeystore, confined-probe-guest) and filesystem (IpcFilesystem, confined-fs-guest). Loaded by lantern-boot's runtime demos."
 license = "MIT OR Apache-2.0"
 publish = false
 
+[lib]
+name = "lantern_confined_runtime"
+path = "src/lib.rs"
+# Bare-metal riscv64 only: there is no `test` crate for this target.
+test = false
+doctest = false
+
 [[bin]]
+# The keystore proof: confined-probe-guest over IpcKeystore (lantern-boot-runtime-demo).
 name = "lantern-confined-runtime"
 path = "src/main.rs"
+
+[[bin]]
+# The filesystem proof: confined-fs-guest over IpcFilesystem (lantern-boot-runtime-fs-demo).
+name = "lantern-confined-runtime-fs"
+path = "src/bin/fs.rs"
 
 [dependencies]
 # `lantern-runtime` is this repo's own root crate (a path dependency); the rest are their
@@ -16,6 +29,7 @@ path = "src/main.rs"
 lantern-runtime = { path = "..", default-features = false, features = ["confined"] }
 lantern-abi = { git = "https://github.com/lantern-os/lantern-abi", branch = "main", features = ["rt"] }
 lantern-crypto = { git = "https://github.com/lantern-os/lantern-crypto", branch = "main", default-features = false }
+lantern-filesystem = { git = "https://github.com/lantern-os/lantern-filesystem", branch = "main", default-features = false }
 # Same feature set lantern-runtime's `confined` role already selects (ADR-0023); named
 # here only for the `Store`/typed-func API this binary calls directly.
 wasmtime = { version = "48", default-features = false, features = ["runtime", "component-model", "pulley"] }
