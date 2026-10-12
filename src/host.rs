@@ -30,16 +30,13 @@
 //! `store-service`), and [`IpcKeystore`]/[`IpcFilesystem`] reach them for real over
 //! [`lantern_abi::frame::Channel`], RFC-0018 Part 2's actual transport, alongside the
 //! in-process stand-ins ([`InProcessFilesystem`], and `lantern_crypto::Keystore`'s own
-//! direct [`KeystoreService`] impl) every test in this crate still uses. What's still
-//! missing is *this crate itself* running confined: `lantern-runtime` only builds/runs on
-//! a native `std` host target today (`STATUS.md`'s "carried forward" note) — folding a
-//! `no_std`/`riscv64` build (`Cargo.toml`'s `confined` feature, folded in from
-//! `lantern-runtime/riscv64-probe`'s own groundwork — [`crate::platform`]) is what lets
-//! `IpcKeystore`/`IpcFilesystem` actually run inside a confined component process instead
-//! of just compiling for one; a real confined binary and a new demo granting it a
-//! `keystore-service`/`store-service` endpoint and shared `Frame` are still separate,
-//! not-yet-built work. The mapping — badge lookup, per-call forwarding, error
-//! translation, link-or-refuse — is real either way.
+//! direct [`KeystoreService`] impl) every test in this crate still uses. This crate also
+//! runs confined itself: its `no_std`/`riscv64` build (`Cargo.toml`'s `confined` feature,
+//! [`crate::platform`]) is what `confined-runtime/` links, and under
+//! `lantern-boot-runtime-demo` that binary runs `IpcKeystore` against a real, separately
+//! confined `keystore-service` (`IpcFilesystem` has no such confined proof yet). The
+//! mapping — badge lookup, per-call forwarding, error translation, link-or-refuse — is the
+//! same in both builds.
 
 #[cfg(not(feature = "std"))]
 use alloc::{boxed::Box, vec, vec::Vec};

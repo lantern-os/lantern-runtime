@@ -27,15 +27,12 @@
 //! active, couldn't dereference its own VSpace's root table) — fixed by
 //! `lantern-kernel`'s `KernelPageTables` (see that type's doc).
 //!
-//! **The exact `ArenaGrant` slot numbers below are `riscv64-probe`'s own
-//! convention, copied verbatim as a starting point — no `lantern-boot` loader
-//! grants *this* crate anything yet.** Whatever eventually loads a real
-//! confined `lantern-runtime` binary (a new demo, not built here) must grant
-//! an `ArenaGrant` whose `self_vspace_dest`/`frame_dest_base`/`megapages`
-//! match [`SELF_VSPACE_CPTR`]/[`ARENA_FRAME_CPTR_BASE`]/[`REGIONS`] below (or
-//! this module's constants get updated to match whatever that loader picks —
-//! the two sides just need to agree, the same "duplicated shared constant"
-//! convention every `lantern-boot` demo/program pair already uses).
+//! **The `ArenaGrant` slot numbers below are a contract with the launcher** —
+//! `lantern-boot/src/runtime_demo/loader.rs` grants `confined-runtime` an
+//! `ArenaGrant` whose `self_vspace_dest`/`frame_dest_base`/`megapages` match
+//! [`SELF_VSPACE_CPTR`]/[`ARENA_FRAME_CPTR_BASE`]/[`REGIONS`] below (the same
+//! "duplicated shared constant" convention every `lantern-boot` demo/program
+//! pair uses). Change one side, change the other.
 //!
 //! TLS is one static pointer; the sync primitives are uncontended no-ops
 //! (single hart, non-reentrant — [ADR-0010](../https://github.com/lantern-os/lantern-rfcs/blob/main/adr/0010-kernel-concurrency-model.md)).
@@ -67,9 +64,8 @@ mod backing {
     use lantern_abi::sys::frame as frame_sys;
     use lantern_abi::wire::MapPerms;
 
-    /// See the module doc's "no loader grants this yet" note — copied from
-    /// `riscv64-probe/src/platform.rs`'s own identical constant as a
-    /// starting point, not yet validated against a real loader for this crate.
+    /// `lantern_boot::launch::ARENA_VADDR` — see the module doc's launcher
+    /// contract.
     const ARENA_VADDR: usize = 0x8820_0000;
     /// `FrameMega` (2 MiB) only, never `FrameSmall` — this project's loader
     /// uses 2 MiB pages exclusively, a documented QEMU 3-level-Sv39-walk
@@ -78,11 +74,12 @@ mod backing {
     /// risk an unrelated, unexercised code path to get finer granularity.
     const MEGAPAGE_BYTES: usize = 2 * 1024 * 1024;
     /// How many (initially unmapped) `FrameMega`s a loader is expected to
-    /// grant, at consecutive `ARENA_FRAME_CPTR_BASE..` slots. A real
-    /// (non-trivial) guest component's actual working set is what should
-    /// drive this once one exists — copied from `riscv64-probe`'s own
-    /// trivial-component sizing for now.
-    const REGIONS: usize = 2;
+    /// grant, at consecutive `ARENA_FRAME_CPTR_BASE..` slots. Sized from the
+    /// first real guest (`confined-probe-guest`): every `wasmtime_mmap_new`
+    /// takes whole megapages, and that guest needs one for its deserialized
+    /// `.cwasm` (~220 KiB) and two for its linear memory
+    /// (`crate::verified::MEMORY_RESERVATION`, 4 MiB) — three, plus one spare.
+    const REGIONS: usize = 4;
     const ARENA_FRAME_CPTR_BASE: usize = 7;
     /// This program's own VSpace capability, expected at
     /// `ArenaGrant::self_vspace_dest`, so it can name itself as

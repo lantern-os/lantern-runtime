@@ -54,9 +54,10 @@
 //! (`host::tests::through_wasmtime::confined_probe_guest_signs_through_a_real_keystore`)
 //! against a real, `Broker`-granted in-process `Keystore` — the wiring shape (component
 //! instantiation, a resource-scoped grant, a real `sign` call through the generated `Host`
-//! trait) is what's new, not the transport; [`host::IpcKeystore`] over a real `Channel`
-//! still needs an actual confined `riscv64` process and `keystore-service` to prove end to
-//! end, not a host test.
+//! trait). The transport is proven separately, under the real kernel:
+//! **`confined-runtime`** (another sibling binary crate) hosts this same guest in a
+//! confined `riscv64` process, with [`host::IpcKeystore`] over a real `Channel` to a
+//! separately confined `keystore-service` (`lantern-boot-runtime-demo`).
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
@@ -76,4 +77,5 @@ pub use host::{
 };
 pub use verified::{
     deserialize_trusted_component, load_verified_component, runtime_engine, LoadError, DEFAULT_FUEL,
+    MEMORY_RESERVATION,
 };

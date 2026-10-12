@@ -293,6 +293,40 @@
   this file. 32 tests green with `--features compiler`; riscv64 `confined` build/clippy
   unaffected (this is a host-only test, gated with everything else `compiler` implies).
 
+- **The RFC-0018 integration proof — a confined `lantern-runtime` process hosting a real
+  guest over `IpcKeystore`, under the real kernel (2026-10-12).** New nested binary crate
+  `confined-runtime/` (not part of this crate's own build, same split as `riscv64-probe`'s
+  `[lib]`/`[[bin]]`): a `#![no_std]`/`#![no_main]` riscv64 program that takes a SIGN-only
+  badged endpoint from a separately confined `keystore-service` over live IPC, backs
+  `confined-probe-guest`'s `keystore` slot 0 with `IpcKeystore` over the shared `Frame`
+  (`GrantManifest` built with `KeyId::from_raw`), and runs the guest's `probe` under
+  Wasmtime + Pulley with fuel on and its code and linear memory in self-mapped arena
+  `Frame`s. Checks three things before signalling `SUCCESS`: an ENCRYPT on the same grant
+  is refused `ACCESS` *by the service* (attenuation is enforced on the far side of the
+  process boundary, not by this runtime); the guest's real `sign` round-trips; the
+  ungranted slot 1 reads `none`. Loaded by `lantern-boot`'s new `lantern-boot-runtime-demo`
+  — **6/6 reproducible `SUCCESS`** (`-m 64M`/`128M`×4/`512M`); every `Signal` also carries
+  a stage code and detail word for diagnosis (no console syscall exists). Three changes it
+  needed here:
+  - **`verified::pulley_config` now sets a 4 MiB `memory_reservation`
+    ([`MEMORY_RESERVATION`], guard 0, growth reservation 4 MiB)** — `pulley64`'s default is
+    the 64-bit host's 4 GiB per linear memory, which a confined process backed by a handful
+    of pre-granted `FrameMega`s can't satisfy. Wasmtime records the reservation in each
+    `.cwasm` and rejects mismatches on deserialize, so it applies to both roles, and
+    `confined-probe-guest/assets/probe.pulley.cwasm` is regenerated. Never surfaced before:
+    the trivial `answer` component has no memory.
+  - **`platform.rs`'s arena is `REGIONS = 4`** (was 2, copied from the trivial probe): one
+    megapage for the deserialized `.cwasm`, two for linear memory, one spare. Its slot
+    constants are now a documented contract with that loader, not a placeholder.
+  - **`examples/precompile.rs`** (`--features compiler`) — the checked-in `.cwasm`
+    regeneration step, previously undocumented.
+  Measured: the whole run uses ~640 KiB of the runtime's bump heap (one `FrameMega`
+  granted). Also found and fixed a real `lantern-hal` bug on the way (a second-started
+  program's `arg0` was always zeroed — see `lantern-hal/STATUS.md`). 32 tests green with
+  `--features compiler`; clippy clean host, `--features compiler`, and riscv64 `confined`.
+  **What this does not prove yet**: the `filesystem` path — `IpcFilesystem` has still never
+  carried a guest's call to a real confined `store-service`.
+
 ## Next
 - Wire `monotonic-clock`'s `now` to `lantern-hal`'s real `monotonic_time_ns()` on
   `riscv64` (host target keeps the shim until the x86-64 HAL clock stops being a stub).
@@ -335,14 +369,14 @@
   (see "Done", `confined-probe-guest`) — this crate itself now builds and links for
   `riscv64`, `IpcKeystore`/`IpcFilesystem` included, every guest execution is
   fuel-bounded, and the wiring shape for a genuine resource-scoped host call is
-  demonstrated end to end (in-process transport). Remaining: a new, separate
-  confined-runtime *binary* crate (entry point, allocator, a `GrantManifest` built with
-  `KeyId::from_raw` from real launcher grants — this library deliberately doesn't provide
-  one, same split `riscv64-probe`'s own `[lib]`/`[[bin]]` division uses); and a new
-  demo/loader granting that binary a real `keystore-service` endpoint and shared `Frame`
-  (+ an `ArenaGrant` for its own Wasm memory) — proving `IpcKeystore` over a real `Channel`
-  with `confined-probe-guest` as the actual guest, the last piece of the RFC-0018
-  integration proof.
+  demonstrated end to end. **The keystore half of the integration proof is done
+  (2026-10-12, see "Done")**: a confined runtime process hosts `confined-probe-guest`
+  with its `keystore` grant served over a real `Channel` by a separately confined
+  `keystore-service`. Remaining: the same proof for `filesystem` (a guest importing
+  `lantern:host/filesystem`, `IpcFilesystem` to a confined `store-service` — whose own
+  AEAD already goes through `keystore-service`, `lantern-boot-store-demo`); a signed
+  `.lpkg` loaded through `load_verified_component` rather than an embedded trusted
+  `.cwasm`; and a launch-binder flow replacing the demo's "first caller gets the grant".
 - Where the compiler role physically runs (`lantern-sdk`/packaging tooling vs. an
   on-device install-time service) and the `.cwasm` artifact's signing-key management story
   — both left to `lantern-sdk`/packaging design, not decided here.

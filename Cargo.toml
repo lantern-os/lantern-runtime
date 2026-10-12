@@ -71,3 +71,7 @@ confined = ["wasmtime/custom-virtual-memory", "wasmtime/custom-sync-primitives"]
 # and this crate's own round-trip test. Implies `std` — the compiler role is offline
 # packaging tooling, never runs confined.
 compiler = ["std", "wasmtime/cranelift", "wasmtime/wat"]
+
+[[example]]
+name = "precompile"
+required-features = ["compiler"]

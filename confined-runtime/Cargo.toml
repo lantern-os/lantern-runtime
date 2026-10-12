@@ -1,0 +1,30 @@
+[package]
+name = "lantern-confined-runtime"
+version = "0.0.0"
+edition = "2021"
+description = "RFC-0018's confined lantern-runtime process: a standalone riscv64 program that hosts a real Wasm guest component (confined-probe-guest) under Wasmtime no_std + Pulley, with its lantern:host/keystore grant backed by IpcKeystore over a real shared Frame to a separately confined keystore-service. Loaded by lantern-boot's runtime demo (src/runtime_demo/)."
+license = "MIT OR Apache-2.0"
+publish = false
+
+[[bin]]
+name = "lantern-confined-runtime"
+path = "src/main.rs"
+
+[dependencies]
+# `lantern-runtime` is this repo's own root crate (a path dependency); the rest are their
+# own `lantern-os` repos.
+lantern-runtime = { path = "..", default-features = false, features = ["confined"] }
+lantern-abi = { git = "https://github.com/lantern-os/lantern-abi", branch = "main", features = ["rt"] }
+lantern-crypto = { git = "https://github.com/lantern-os/lantern-crypto", branch = "main", default-features = false }
+# Same feature set lantern-runtime's `confined` role already selects (ADR-0023); named
+# here only for the `Store`/typed-func API this binary calls directly.
+wasmtime = { version = "48", default-features = false, features = ["runtime", "component-model", "pulley"] }
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+# `lantern-boot` embeds this ELF in its own kernel image, which has exactly one 2 MiB
+# megapage reserved (`lantern-boot/linker.ld`); symbols alone would overflow it.
+strip = true

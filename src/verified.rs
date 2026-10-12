@@ -51,15 +51,41 @@ pub fn runtime_engine() -> Engine {
 pub const DEFAULT_FUEL: u64 = 10_000_000;
 
 /// The shared runtime/compiler `Config`: Component Model on, `pulley64` target, fuel
-/// metering on. Kept in one place so the two roles cannot drift on the target the `.cwasm`
-/// is built for vs. run on — a mismatch there is a `Deserialize` error, not a subtle bug.
+/// metering on, a small linear-memory reservation. Kept in one place so the two roles cannot
+/// drift on the target the `.cwasm` is built for vs. run on — a mismatch there is a
+/// `Deserialize` error, not a subtle bug.
+///
+/// **The memory reservation is part of that contract too**: Wasmtime records
+/// `memory_reservation` (and `memory_guard_size`) in every `.cwasm` and refuses to
+/// deserialize one compiled under different values, so this can't be a confined-role-only
+/// override. `pulley64`'s own default is the 64-bit host's — a 4 GiB reservation per linear
+/// memory — which a confined runtime process can't back at all: its custom platform
+/// (`platform.rs`) backs every `wasmtime_mmap_new` with real, pre-granted `FrameMega`s, a
+/// handful in total (`lantern-boot`'s `ArenaGrant`), not lazily-faulted virtual address
+/// space. [`MEMORY_RESERVATION`] instead; Pulley bounds-checks explicitly, so a small
+/// reservation costs no safety, only the (irrelevant, for an interpreter) guard-page
+/// bounds-check elision. Found when the first real guest component with a linear memory
+/// (`confined-probe-guest`) was run confined — the earlier trivial `answer` component has no
+/// memory at all, so never asked.
 pub(crate) fn pulley_config() -> Config {
     let mut config = Config::new();
     config.wasm_component_model(true);
     config.target("pulley64").expect("pulley64 is a valid Wasmtime target triple");
     config.consume_fuel(true);
+    config.memory_reservation(MEMORY_RESERVATION);
+    config.memory_guard_size(0);
+    // Not recorded in the `.cwasm` (runtime-only): growth past the reservation moves the
+    // memory to a fresh mapping of `minimum + this`. Small for the same arena reason.
+    config.memory_reservation_for_growth(MEMORY_RESERVATION);
     config
 }
+
+/// Per-linear-memory reservation (see [`runtime_engine`]'s `Config`): 4 MiB, i.e. two
+/// `FrameMega`s in a confined process's arena. A `std` `wasm32-wasip2` Rust guest's initial
+/// memory (its 1 MiB shadow stack plus data, ~17 Wasm pages) fits with room to grow. Not
+/// tuned beyond that — same "revisit when a real workload says so" stance as
+/// [`DEFAULT_FUEL`].
+pub const MEMORY_RESERVATION: u64 = 4 * 1024 * 1024;
 
 /// Verifies `cwasm`'s Ed25519 signature under `public_key` (RFC-0007's ratified primitive,
 /// via [`lantern_crypto::signing::verify`]) and only then deserializes it. Verification
