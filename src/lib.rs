@@ -57,7 +57,9 @@
 //! trait). The transport is proven separately, under the real kernel:
 //! **`confined-runtime`** (another sibling binary crate) hosts this same guest in a
 //! confined `riscv64` process, with [`host::IpcKeystore`] over a real `Channel` to a
-//! separately confined `keystore-service` (`lantern-boot-runtime-demo`).
+//! separately confined `keystore-service` (`lantern-boot-runtime-demo`) — and its
+//! filesystem twin, **`confined-fs-guest`**, with [`host::IpcFilesystem`] to a confined
+//! `store-service` (`lantern-boot-runtime-fs-demo`).
 
 #![cfg_attr(not(feature = "std"), no_std)]
 

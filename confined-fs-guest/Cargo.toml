@@ -1,0 +1,22 @@
+[package]
+name = "lantern-runtime-confined-fs-guest"
+version = "0.0.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+publish = false
+description = "RFC-0018's filesystem-path confined guest component -- imports lantern:host/filesystem and nothing else. Not shipped; not part of lantern-runtime's own build."
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# Guest-side WIT bindings generator. This crate's only dependency, matching
+# confined-probe-guest, its keystore-path sibling.
+wit-bindgen = "0.57"
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true
+codegen-units = 1
+panic = "abort"

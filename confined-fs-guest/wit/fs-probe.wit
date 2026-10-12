@@ -1,0 +1,12 @@
+package lantern:confined-fs-probe;
+
+/// RFC-0018's filesystem-path confined guest component: imports exactly one
+/// capability-gated host interface — `lantern:host/filesystem` — and nothing else.
+/// The filesystem twin of `confined-probe-guest`'s keystore-only `probe` world.
+world fs-probe {
+    import lantern:host/filesystem@0.1.0;
+
+    /// A one-line report. Starts with `"ok: "` on success, `"error: "` on any capability
+    /// denial or unexpected content — the guest's only failure channel.
+    export probe: func() -> string;
+}

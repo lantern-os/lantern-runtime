@@ -1,0 +1,41 @@
+// Vendored copy of `lantern-runtime`'s own `wit/host.wit` — just the `filesystem`
+// interface this guest actually imports. Keep in lockstep with:
+//   ../../wit/host.wit
+// RFC-0016/ADR-0019 fixes the contract `lantern-runtime::build_linker` satisfies.
+
+package lantern:host@0.1.0;
+
+/// LanternOS-owned (RFC-0016 / ADR-0019). Resource-scoped: one host capability record
+/// per `file` handle. Shaped like `lantern-filesystem`'s `Store` — a `FileId` reached
+/// by handle, no paths, no directories, no listing, no guest-driven file creation.
+interface filesystem {
+    /// Relayed verbatim from the owning store's own deny-by-default check.
+    enum error-code {
+        /// The badge behind this handle was denied by the store: unknown, revoked,
+        /// scoped to a different file, or not granted this operation.
+        access,
+        /// The arguments were malformed (e.g. a write past the store's block size) or
+        /// the store's own AEAD layer rejected them.
+        invalid,
+    }
+
+    /// A capability to one file in the store, scoped to the operation subset the
+    /// manifest granted. Methods forward to the store, which re-checks the badge on
+    /// every call. A component cannot create, destroy, or enumerate files.
+    resource file {
+        /// The file's entire current content. v0 `Store` holds one block per file, so
+        /// this is bounded by the store's block size; an unwritten file reads as empty.
+        /// A future chunked `Store` will add `read-at(offset, len)` rather than change
+        /// this.
+        read: func() -> result<list<u8>, error-code>;
+
+        /// Replaces the file's entire content. Bounded by the store's block size in v0
+        /// (an oversized write is `invalid`, not a partial write).
+        write: func(bytes: list<u8>) -> result<_, error-code>;
+    }
+
+    /// The ONLY way a component obtains a `file`. `slot` indexes the capability
+    /// manifest's explicit grant list — not any path or namespace. `none` for a slot
+    /// the manifest left empty.
+    open: func(slot: u32) -> option<file>;
+}
