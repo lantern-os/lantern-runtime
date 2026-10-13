@@ -6,12 +6,13 @@
 //!
 //! Steps, in order:
 //!
-//! 1. Request the grant from the keystore-service.
-//! 2. **Attenuation check, host side**: an ENCRYPT over the same `IpcKeystore` must come
+//! 1. Verify the guest's `.lpkg` the launcher mapped (see `lib.rs`).
+//! 2. Request the grant from the keystore-service.
+//! 3. **Attenuation check, host side**: an ENCRYPT over the same `IpcKeystore` must come
 //!    back `ACCESS` — the badge is SIGN-only, and the keystore-service, not this process,
 //!    is what enforces it.
-//! 3. Run the guest's `probe`; its report must start `ok: ` and show slot 1 as `none`.
-//! 4. Signal `SUCCESS` or `FAILURE`.
+//! 4. Run the guest's `probe`; its report must start `ok: ` and show slot 1 as `none`.
+//! 5. Signal `SUCCESS` or `FAILURE`.
 
 #![no_std]
 #![no_main]
@@ -23,23 +24,22 @@ use alloc::boxed::Box;
 use alloc::vec;
 
 use lantern_confined_runtime::{
-    check_report, request_grant, run_and_report, run_probe, Stage, StageResult, DEST_CPTR, FRAME_VADDR,
+    check_report, request_grant, run_and_report, run_probe, verify_package, Stage, StageResult, DEST_CPTR,
+    FRAME_VADDR,
 };
 use lantern_crypto::{KeyId, KeystoreError};
 use lantern_runtime::{GrantManifest, HostCapability, IpcKeystore, KeystoreService, RuntimeState};
 
 lantern_abi::entry!(run);
 
-/// `confined-probe-guest`, precompiled for `pulley64` by `lantern-runtime`'s compiler role
-/// (`cargo run --example precompile --features compiler`). Embedded: this process has no
-/// filesystem, and the image is part of what the launcher loads and measures.
-const PROBE_CWASM: &[u8] = include_bytes!("../../confined-probe-guest/assets/probe.pulley.cwasm");
-
-fn run(_arg0: usize) -> ! {
-    run_and_report(host_the_guest)
+/// `arg0`: the length of the guest's `.lpkg` (`confined-probe-guest/assets/probe.lpkg`)
+/// the launcher mapped at `PACKAGE_VADDR`.
+fn run(arg0: usize) -> ! {
+    run_and_report(arg0, host_the_guest)
 }
 
-fn host_the_guest() -> StageResult<()> {
+fn host_the_guest(package_len: usize) -> StageResult<()> {
+    let cwasm = verify_package(package_len)?;
     request_grant()?;
 
     // SAFETY: the loader mapped the shared Frame read/write at FRAME_VADDR, in this
@@ -64,7 +64,6 @@ fn host_the_guest() -> StageResult<()> {
         ..Default::default()
     };
     let state = RuntimeState::new(grants()).with_keystore(Box::new(keystore));
-    // SAFETY: `PROBE_CWASM` is this repo's own trusted compiler-role output.
-    let report = unsafe { run_probe(PROBE_CWASM, &grants(), state) }?;
+    let report = run_probe(cwasm, &grants(), state)?;
     check_report(&report, &["keystore.open(1)=none"])
 }

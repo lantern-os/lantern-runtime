@@ -10,7 +10,8 @@
 //! `keystore-service` (`lantern_filesystem::cipher::ChannelCipher`). So the guest's
 //! bytes are sealed at rest by a key that neither this process nor the guest can name.
 //!
-//! Steps: request the grant from the store-service; run the guest's `probe`; its report
+//! Steps: verify the guest's `.lpkg` the launcher mapped (see `lib.rs`); request the
+//! grant from the store-service; run the guest's `probe`; its report
 //! must start `ok: ` and confirm the refused write and the `none` slot; signal.
 
 #![no_std]
@@ -22,21 +23,22 @@ extern crate alloc;
 use alloc::boxed::Box;
 use alloc::vec;
 
-use lantern_confined_runtime::{check_report, request_grant, run_and_report, run_probe, StageResult, DEST_CPTR, FRAME_VADDR};
+use lantern_confined_runtime::{
+    check_report, request_grant, run_and_report, run_probe, verify_package, StageResult, DEST_CPTR, FRAME_VADDR,
+};
 use lantern_filesystem::FileId;
 use lantern_runtime::{GrantManifest, HostFile, IpcFilesystem, RuntimeState};
 
 lantern_abi::entry!(run);
 
-/// `confined-fs-guest`, precompiled for `pulley64` by `lantern-runtime`'s compiler role
-/// (`cargo run --example precompile --features compiler`).
-const FS_PROBE_CWASM: &[u8] = include_bytes!("../../../confined-fs-guest/assets/fs-probe.pulley.cwasm");
-
-fn run(_arg0: usize) -> ! {
-    run_and_report(host_the_guest)
+/// `arg0`: the length of the guest's `.lpkg` (`confined-fs-guest/assets/fs-probe.lpkg`)
+/// the launcher mapped at `PACKAGE_VADDR`.
+fn run(arg0: usize) -> ! {
+    run_and_report(arg0, host_the_guest)
 }
 
-fn host_the_guest() -> StageResult<()> {
+fn host_the_guest(package_len: usize) -> StageResult<()> {
+    let cwasm = verify_package(package_len)?;
     request_grant()?;
 
     // SAFETY: the loader mapped the shared Frame read/write at FRAME_VADDR, in this
@@ -52,7 +54,6 @@ fn host_the_guest() -> StageResult<()> {
         ..Default::default()
     };
     let state = RuntimeState::new(grants()).with_filesystem(Box::new(filesystem));
-    // SAFETY: `FS_PROBE_CWASM` is this repo's own trusted compiler-role output.
-    let report = unsafe { run_probe(FS_PROBE_CWASM, &grants(), state) }?;
+    let report = run_probe(cwasm, &grants(), state)?;
     check_report(&report, &["oversized write=invalid", "content intact", "filesystem.open(1)=none"])
 }

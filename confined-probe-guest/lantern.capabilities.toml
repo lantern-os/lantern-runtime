@@ -1,0 +1,10 @@
+# What confined-probe-guest asks for (RFC-0015). `lantern-sdk build` checks the component
+# imports exactly these interfaces and signs this file together with the `.cwasm`.
+[app]
+name    = "confined-probe"
+version = "0.1.0"
+
+[[keystore.key]]
+role          = "probe-signing"
+ops           = ["sign"]
+justification = "Signs one fixed message to prove a scoped keystore grant works confined."

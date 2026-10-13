@@ -346,6 +346,25 @@
   everywhere including both guests. Both RFC-0018 host interfaces that exist —
   `keystore` and `filesystem` — now have a confined end-to-end proof; `monotonic-clock`
   (link-scoped, no service behind it) is still the host shim.
+- **Confined guests now arrive as signed `.lpkg` packages, verified before
+  `deserialize` (2026-10-12).** Neither `confined-runtime` binary embeds its guest any more.
+  Each guest crate has a `lantern.capabilities.toml` (one SIGN key; one READ|WRITE file),
+  and `lantern-sdk build --seed 4c…4c` turns it plus the component into
+  `assets/probe.lpkg` / `assets/fs-probe.lpkg`. The packaged `.cwasm` is byte-identical to
+  the checked-in `.pulley.cwasm`, so the build is deterministic. Rebuild both together.
+  `lantern-boot` maps the package read-only at `PACKAGE_VADDR` and passes its length in
+  `arg0`. The runtime decodes it in place (`lantern_sdk::package::decode_package_ref`,
+  `no_std`) and verifies it against `PUBLISHER_KEY`, the one publisher key its image
+  trusts (a public **demo** key). Only a `VerifiedCwasm` that check produced reaches
+  `deserialize_trusted_component`, so `run_probe` is now a safe fn. It first checks that a
+  copy with one flipped `.cwasm` byte is *rejected*, so a verifier that accepts everything
+  can't pass. Under QEMU, both runtime demos give 5/5 `SUCCESS` across `-m 64M`–`512M`.
+  The heap grows by exactly one `.cwasm`, which is the self-check's copy. Four negative
+  runs all signal `FAILURE` at the new `Stage::Package` (9) before Wasmtime sees a byte:
+  a flipped `.cwasm` byte, a flipped manifest byte, a package validly signed by another
+  key (detail 4), and a truncated package (detail 2). The manifest inside the package is
+  signed but not yet *read* by the runtime. Grants are still each binary's fixed
+  `GrantManifest`, since turning a manifest into grants is the launch binder's job.
 
 ## Next
 - Wire `monotonic-clock`'s `now` to `lantern-hal`'s real `monotonic_time_ns()` on
@@ -394,9 +413,10 @@
   with its `keystore` grant served over a real `Channel` by a separately confined
   `keystore-service`; **the filesystem half too (same day)**: `confined-fs-guest` over
   `IpcFilesystem` to a confined `store-service` sealing through a confined
-  `keystore-service`. Remaining: a signed `.lpkg` loaded through `load_verified_component`
-  rather than an embedded trusted `.cwasm` (and a runtime that receives its guest from the
-  launcher instead of embedding one per binary); a launch-binder flow replacing the demos'
+  `keystore-service`. **Guests now arrive from the launcher as signed `.lpkg`s, verified
+  before deserialize (same day, see "Done").** Remaining: the runtime reading the
+  package's own manifest (a `no_std` manifest reader) so one binary can pick its host
+  wiring and grants from it; a launch-binder flow replacing the demos'
   "first caller gets the grant"; one runtime hosting both interfaces at once (needs a
   multi-grant `keystore-service` and more kernel capacity — `runtime-fs-demo` already
   sits at `MAX_FRAMES` 16/16 and 31/32 root CNode slots).
