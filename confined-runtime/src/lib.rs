@@ -15,11 +15,19 @@
 //! (Part 2) by a separately confined service (Part 1), of which this process holds only
 //! the badged endpoint it was handed over IPC.
 //!
-//! Two binaries rather than one that picks a guest at run time: each embeds its guest's
-//! `.cwasm` (~220–290 KiB), and `lantern-boot` embeds the runtime ELF in a kernel image
-//! with one 2 MiB megapage to spare. A runtime that receives its guest from the launcher
-//! (a signed `.lpkg` in a granted `Frame`, `load_verified_component`) is the general form;
-//! this is the fixed-demo form.
+//! **The guest arrives as a signed package, not in this image.** The launcher maps the
+//! guest's `.lpkg` (built by `lantern-sdk build`: manifest + `.cwasm` + an Ed25519
+//! signature over `BLAKE3(manifest) ‖ BLAKE3(cwasm)`) read-only at [`PACKAGE_VADDR`] and
+//! passes its exact length in `arg0`. [`verify_package`] checks it against
+//! [`PUBLISHER_KEY`], the one key this image trusts, and only a [`VerifiedCwasm`] that
+//! check produced ever reaches Wasmtime's `deserialize`. The launcher is not trusted to
+//! hand over the right bytes: a package it altered, or one signed by anyone else, fails
+//! here at [`Stage::Package`].
+//!
+//! Two binaries, not one that picks its host wiring at run time: the wiring
+//! (`IpcKeystore` vs `IpcFilesystem`) still differs per guest. Choosing it from the
+//! package's own manifest needs a `no_std` manifest reader and the launch binder
+//! (RFC-0015, `lantern-shell`) — later work.
 //!
 //! **Diagnostics**: every `Signal` either binary sends carries a [`Stage`] code in `a1`
 //! and a detail word in `a2` (heap bytes used, on success). The kernel ignores both;
@@ -32,6 +40,7 @@
 extern crate alloc;
 
 use alloc::string::String;
+use alloc::vec::Vec;
 
 use lantern_abi::sys;
 use lantern_abi::wire::{syscall, MessageTag};
@@ -57,10 +66,27 @@ pub const FRAME_VADDR: usize = 0x9000_0000;
 /// Heap for `lantern-abi`'s bump allocator: Wasmtime's `Engine`/`Component`/`Store`
 /// bookkeeping and Pulley's interpreter stack. Must equal `lantern_boot::launch::HEAP_VADDR`,
 /// sized by the loader's `heap_megapages`. One `FrameMega`: measured under QEMU, a full
-/// keystore-guest run peaks at ~640 KiB (the bump allocator never frees, so that is the
-/// whole run's total), reported back in the `SUCCESS` signal's detail word.
+/// run uses ~840 KiB (keystore guest) to ~910 KiB (filesystem guest). The bump allocator
+/// never frees, so that is the whole run's total, reported back in the `SUCCESS` signal's
+/// detail word. About a third of it is [`verify_package`]'s tampered `.cwasm` copy.
 pub const HEAP_BASE: usize = 0x8620_0000;
 pub const HEAP_LEN: usize = 0x20_0000;
+
+/// Where the launcher maps the guest's `.lpkg`, read-only — must equal
+/// `lantern_boot::launch::PACKAGE_VADDR`. Its exact length arrives in `arg0`.
+pub const PACKAGE_VADDR: usize = 0x8c00_0000;
+/// The most the launcher maps there: one `FrameMega`.
+pub const PACKAGE_MAX_LEN: usize = 0x20_0000;
+
+/// The one publisher whose packages this image runs: the verifying half of the **demo**
+/// key both guests' `.lpkg`s are signed with (`lantern-sdk build --seed 4c4c…4c`, 32
+/// bytes of `0x4c`). The seed is public, so this proves the verification path, not
+/// any real publisher's identity. Choosing which publishers a device trusts belongs to
+/// the launch binder's trust store (RFC-0015), not to a constant in a runtime image.
+pub const PUBLISHER_KEY: [u8; 32] = [
+    0x92, 0x73, 0x08, 0xf5, 0x3d, 0x67, 0x65, 0x50, 0x3d, 0x2b, 0x64, 0xc1, 0x03, 0xab, 0x5a, 0xa4,
+    0x72, 0x06, 0xab, 0x39, 0x50, 0x2c, 0xfe, 0x8f, 0x98, 0x44, 0x2f, 0xdb, 0x54, 0x31, 0x00, 0xb7,
+];
 
 /// What a `Signal`'s `a1` reports — see the crate doc.
 #[derive(Clone, Copy)]
@@ -75,19 +101,23 @@ pub enum Stage {
     Lookup = 6,
     Call = 7,
     Verdict = 8,
+    /// The launcher-provided `.lpkg`: detail `1` bad length, `2` malformed, `3` a
+    /// tampered copy verified (the check itself is broken), `4` the real package did
+    /// not verify.
+    Package = 9,
 }
 
 pub type StageResult<T> = Result<T, (Stage, usize)>;
 
 /// The whole program, after `lantern_abi::entry!`: set up the heap and panic reporting,
-/// run `host`, signal its outcome, park.
-pub fn run_and_report(host: fn() -> StageResult<()>) -> ! {
+/// run `host` with `arg0` (the package length), signal its outcome, park.
+pub fn run_and_report(arg0: usize, host: fn(usize) -> StageResult<()>) -> ! {
     // SAFETY: the loader mapped `HEAP_BASE..+HEAP_LEN` read/write into this program's own
     // VSpace before its first instruction ran (`ProgramSpec::heap_megapages`).
     unsafe { lantern_abi::rt::init_heap(HEAP_BASE, HEAP_LEN) };
     lantern_abi::rt::report_panics_via(FAILURE_CPTR);
 
-    let (cptr, stage, detail) = match host() {
+    let (cptr, stage, detail) = match host(arg0) {
         // `heap_stats().0` is the bump pointer (an address), not a byte count.
         Ok(()) => (SUCCESS_CPTR, Stage::Done, lantern_abi::rt::heap_stats().0 - HEAP_BASE),
         Err((stage, detail)) => (FAILURE_CPTR, stage, detail),
@@ -106,18 +136,49 @@ pub fn request_grant() -> StageResult<()> {
     sys::call_with_reply_slot(ENDPOINT_CPTR, DEST_CPTR, [0, 0]).map(drop).map_err(|_| (Stage::Grant, 0))
 }
 
+/// A `.cwasm` whose package signature verified under [`PUBLISHER_KEY`]. Only
+/// [`verify_package`] constructs one, which is what lets [`run_probe`] be safe.
+pub struct VerifiedCwasm(&'static [u8]);
+
+/// Read the launcher's `.lpkg` at [`PACKAGE_VADDR`] and verify it under
+/// [`PUBLISHER_KEY`].
+///
+/// First, a self-check: a copy with one `.cwasm` byte flipped must be **rejected**. A
+/// broken verifier that accepted everything would otherwise pass this demo just as well
+/// as a working one. The copy costs one `.cwasm` of heap, which never frees.
+pub fn verify_package(package_len: usize) -> StageResult<VerifiedCwasm> {
+    if package_len == 0 || package_len > PACKAGE_MAX_LEN {
+        return Err((Stage::Package, 1));
+    }
+    // SAFETY: the loader mapped `PACKAGE_MAX_LEN` bytes read-only at `PACKAGE_VADDR` for
+    // this program's whole life (`ProgramSpec::package`), and nothing maps over it.
+    let bytes: &'static [u8] = unsafe { core::slice::from_raw_parts(PACKAGE_VADDR as *const u8, package_len) };
+    let package = lantern_sdk::package::decode_package_ref(bytes).map_err(|_| (Stage::Package, 2))?;
+
+    let mut tampered: Vec<u8> = package.cwasm_bytes.to_vec();
+    if let Some(byte) = tampered.last_mut() {
+        *byte ^= 1;
+    }
+    let forged = lantern_sdk::package::PackageRef { cwasm_bytes: &tampered, ..package };
+    if forged.verify(&PUBLISHER_KEY).is_ok() {
+        return Err((Stage::Package, 3));
+    }
+
+    package.verify(&PUBLISHER_KEY).map_err(|_| (Stage::Package, 4))?;
+    Ok(VerifiedCwasm(package.cwasm_bytes))
+}
+
 /// Deserialize `cwasm`, link exactly what `manifest` declares, instantiate against
 /// `state` with [`DEFAULT_FUEL`], and call the guest's `probe: func() -> string` export.
 ///
-/// # Safety
-/// `cwasm` must be trusted bytes — Wasmtime's `Component::deserialize` contract. Both
-/// binaries pass a build-time constant produced by this repo's own compiler role and
-/// embedded in the image the launcher loaded; a real deployment verifies a signed
-/// `.lpkg` first (`load_verified_component`).
-pub unsafe fn run_probe(cwasm: &[u8], manifest: &GrantManifest, state: RuntimeState) -> StageResult<String> {
+/// The manifest inside the package is signed but not read here: turning it into grants
+/// is the launch binder's job. `manifest` is still this binary's fixed demo grant.
+pub fn run_probe(cwasm: VerifiedCwasm, manifest: &GrantManifest, state: RuntimeState) -> StageResult<String> {
     let engine = runtime_engine();
-    // SAFETY: forwarded from this function's own contract.
-    let component = unsafe { deserialize_trusted_component(&engine, cwasm) }.map_err(|_| (Stage::Deserialize, 0))?;
+    // SAFETY: `VerifiedCwasm` exists only for bytes whose package signature verified
+    // under `PUBLISHER_KEY` (`verify_package`) — `deserialize_trusted_component`'s
+    // contract, the `.lpkg` case its own doc names.
+    let component = unsafe { deserialize_trusted_component(&engine, cwasm.0) }.map_err(|_| (Stage::Deserialize, 0))?;
 
     let mut linker = build_linker(&engine, manifest).map_err(|_| (Stage::Link, 0))?;
     // `std` `wasm32-wasip2` startup imports (`wasi:cli/*`, `wasi:io/*`) the guest never

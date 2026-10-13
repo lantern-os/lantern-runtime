@@ -1,0 +1,10 @@
+# What confined-fs-guest asks for (RFC-0015). `lantern-sdk build` checks the component
+# imports exactly these interfaces and signs this file together with the `.cwasm`.
+[app]
+name    = "confined-fs-probe"
+version = "0.1.0"
+
+[[filesystem.file]]
+role          = "scratch"
+ops           = ["read", "write"]
+justification = "Writes, reads back and overwrites one small file to prove a scoped file grant works confined."

@@ -73,12 +73,15 @@ mod backing {
     /// host-tested but not exercised on that path, so this arena doesn't
     /// risk an unrelated, unexercised code path to get finer granularity.
     const MEGAPAGE_BYTES: usize = 2 * 1024 * 1024;
-    /// How many (initially unmapped) `FrameMega`s a loader is expected to
-    /// grant, at consecutive `ARENA_FRAME_CPTR_BASE..` slots. Sized from the
-    /// first real guest (`confined-probe-guest`): every `wasmtime_mmap_new`
-    /// takes whole megapages, and that guest needs one for its deserialized
-    /// `.cwasm` (~220 KiB) and two for its linear memory
+    /// The most (initially unmapped) `FrameMega`s a loader may grant, at
+    /// consecutive `ARENA_FRAME_CPTR_BASE..` slots; a slot the loader left
+    /// empty just fails that `wasmtime_mmap_new`. Sized from the first real
+    /// guest (`confined-probe-guest`): every `wasmtime_mmap_new` takes whole
+    /// megapages, and that guest needs one for its deserialized `.cwasm`
+    /// (~220 KiB) and two for its linear memory
     /// (`crate::verified::MEMORY_RESERVATION`, 4 MiB) — three, plus one spare.
+    /// `lantern-boot`'s runtime demos grant exactly three, measured under QEMU
+    /// as the minimum for both guests.
     const REGIONS: usize = 4;
     const ARENA_FRAME_CPTR_BASE: usize = 7;
     /// This program's own VSpace capability, expected at

@@ -59,7 +59,9 @@
 //! confined `riscv64` process, with [`host::IpcKeystore`] over a real `Channel` to a
 //! separately confined `keystore-service` (`lantern-boot-runtime-demo`) — and its
 //! filesystem twin, **`confined-fs-guest`**, with [`host::IpcFilesystem`] to a confined
-//! `store-service` (`lantern-boot-runtime-fs-demo`).
+//! `store-service` (`lantern-boot-runtime-fs-demo`). There, each guest arrives as a
+//! signed `.lpkg` (`lantern-sdk build`) that the launcher maps and the runtime verifies
+//! before [`deserialize_trusted_component`].
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
