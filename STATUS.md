@@ -333,8 +333,9 @@
   `invalid` with the content left intact, and sees slot 1 as `none`. Proven in-process
   first (`confined_fs_guest_round_trips_through_a_real_store`, against a real `Store`), then
   confined: `confined-runtime/` is now a small lib (shared grant request, guest hosting,
-  stage-coded signalling) plus two binaries — `lantern-confined-runtime` (keystore, as
-  before) and `lantern-confined-runtime-fs`, whose slot 0 is `IpcFilesystem` (built with
+  stage-coded signalling) plus two binaries (merged into one on 2026-11-02, see below) —
+  `lantern-confined-runtime` (keystore, as before) and `lantern-confined-runtime-fs`, whose
+  slot 0 is `IpcFilesystem` (built with
   `lantern_filesystem::FileId::from_raw`, the `KeyId::from_raw` twin) to a confined
   `store-service` that seals every block through its own grant on a confined
   `keystore-service`. `lantern-boot-runtime-fs-demo`: **6/6 reproducible `SUCCESS`**
@@ -365,6 +366,28 @@
   key (detail 4), and a truncated package (detail 2). The manifest inside the package is
   signed but not yet *read* by the runtime. Grants are still each binary's fixed
   `GrantManifest`, since turning a manifest into grants is the launch binder's job.
+- **One confined runtime binary, wired from the package's own manifest (2026-11-02).**
+  `lantern-confined-runtime-fs` is gone. `lantern-confined-runtime` verifies the package,
+  parses its manifest with `lantern-sdk`'s own parser (now `no_std`, see its STATUS), and
+  builds `IpcKeystore` or `IpcFilesystem` from what it declares. Declared roles keep their
+  `open(slot)` indices; the process holds one grant, which backs slot 0, and later roles are
+  holes. Only `VerifiedPackage` exposes the manifest, so unauthenticated bytes can't reach the
+  parser. **The manifest is a request, not authority (RFC-0015):** it selects wiring and slot
+  layout, and what the guest can reach is still only the capabilities this process holds.
+  Under QEMU both demos run the byte-identical ELF, 5/5 each across `-m 64M`–`512M`. Twelve
+  hostile packages, all as predicted: invalid TOML, non-UTF-8 and an unknown interface
+  (`Stage::Manifest` detail 1), nothing declared (2), keystore + filesystem (3),
+  `monotonic-clock` (4); a garbage manifest under the original signature stops at
+  `Stage::Package`, before the parser; a filesystem manifest on the keystore guest traps at
+  `Stage::Call`, and a keystore manifest on the filesystem guest fails `Stage::Attenuation`; a
+  manifest over-asking `sign`+`encrypt`+`decrypt` still has ENCRYPT refused by the service
+  and otherwise succeeds; two roles with one grant succeeds with slot 1 `none`. Size: ELF
+  935 → 1,103 KiB (still 2 image `Frame`s, `MAX_FRAMES` unchanged); heap ~855 / ~925 KiB of
+  2 MiB. **Known gap, the launch binder's:** a manifest *under*-asking (`decrypt` only) still
+  signs, because the demo's grant is fixed by the service rather than minted from the
+  manifest's `ops`, so `ops` are not yet enforced end to end. `monotonic-clock` is refused
+  rather than linked: unlinked imports become trap stubs here, so RFC-0015's "fails to
+  instantiate" would otherwise become a trap mid-run.
 
 ## Next
 - Wire `monotonic-clock`'s `now` to `lantern-hal`'s real `monotonic_time_ns()` on
@@ -414,10 +437,10 @@
   `keystore-service`; **the filesystem half too (same day)**: `confined-fs-guest` over
   `IpcFilesystem` to a confined `store-service` sealing through a confined
   `keystore-service`. **Guests now arrive from the launcher as signed `.lpkg`s, verified
-  before deserialize (same day, see "Done").** Remaining: the runtime reading the
-  package's own manifest (a `no_std` manifest reader) so one binary can pick its host
-  wiring and grants from it; a launch-binder flow replacing the demos'
-  "first caller gets the grant"; one runtime hosting both interfaces at once (needs a
+  before deserialize (same day, see "Done").** **One binary now takes its host wiring from
+  the package's own manifest (2026-11-02, see "Done").** Remaining: a launch-binder flow
+  replacing the demos' "first caller gets the grant", minting each grant from the manifest's
+  `ops` (today a manifest's `ops` don't narrow what the guest can do); one runtime hosting both interfaces at once (needs a
   multi-grant `keystore-service` and more kernel capacity — `runtime-fs-demo` already
   sits at `MAX_FRAMES` 16/16 and 31/32 root CNode slots).
 - Where the compiler role physically runs (`lantern-sdk`/packaging tooling vs. an

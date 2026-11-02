@@ -1,14 +1,13 @@
-//! What both confined-runtime binaries share — [RFC-0018](https://github.com/lantern-os/lantern-rfcs/blob/main/rfcs/0018-confined-execution-port.md)'s
-//! integration proofs, one per host interface:
+//! The library half of `lantern-confined-runtime`, [RFC-0018](https://github.com/lantern-os/lantern-rfcs/blob/main/rfcs/0018-confined-execution-port.md)'s
+//! integration proof. One binary, two wirings, chosen by the guest's own package:
 //!
-//! - `src/main.rs` (`lantern-confined-runtime`): `confined-probe-guest`, `keystore` over
-//!   [`lantern_runtime::IpcKeystore`] to a confined `keystore-service`
-//!   (`lantern-boot-runtime-demo`).
-//! - `src/bin/fs.rs` (`lantern-confined-runtime-fs`): `confined-fs-guest`, `filesystem`
-//!   over [`lantern_runtime::IpcFilesystem`] to a confined `store-service`, whose own AEAD
-//!   goes through a confined `keystore-service` (`lantern-boot-runtime-fs-demo`).
+//! - `confined-probe-guest` declares `keystore`: [`lantern_runtime::IpcKeystore`] to a
+//!   confined `keystore-service` (`lantern-boot-runtime-demo`).
+//! - `confined-fs-guest` declares `filesystem`: [`lantern_runtime::IpcFilesystem`] to a
+//!   confined `store-service`, whose own AEAD goes through a confined `keystore-service`
+//!   (`lantern-boot-runtime-fs-demo`).
 //!
-//! Each is one real U-mode program under the real kernel, with everything RFC-0018 split
+//! It is one real U-mode program under the real kernel, with everything RFC-0018 split
 //! into Parts 1–3: Wasmtime `no_std` + Pulley, its code and linear memory in `FrameMega`s
 //! the program maps itself (`lantern_runtime::platform`, granted by `lantern-boot`'s
 //! `ArenaGrant`), fuel on (Part 3); the guest's grant served over a real shared `Frame`
@@ -19,17 +18,19 @@
 //! guest's `.lpkg` (built by `lantern-sdk build`: manifest + `.cwasm` + an Ed25519
 //! signature over `BLAKE3(manifest) ‖ BLAKE3(cwasm)`) read-only at [`PACKAGE_VADDR`] and
 //! passes its exact length in `arg0`. [`verify_package`] checks it against
-//! [`PUBLISHER_KEY`], the one key this image trusts, and only a [`VerifiedCwasm`] that
-//! check produced ever reaches Wasmtime's `deserialize`. The launcher is not trusted to
-//! hand over the right bytes: a package it altered, or one signed by anyone else, fails
-//! here at [`Stage::Package`].
+//! [`PUBLISHER_KEY`], the one key this image trusts, and only a [`VerifiedPackage`] that
+//! check produced ever reaches Wasmtime's `deserialize` or the manifest parser. The
+//! launcher is not trusted to hand over the right bytes: a package it altered, or one
+//! signed by anyone else, fails here at [`Stage::Package`].
 //!
-//! Two binaries, not one that picks its host wiring at run time: the wiring
-//! (`IpcKeystore` vs `IpcFilesystem`) still differs per guest. Choosing it from the
-//! package's own manifest needs a `no_std` manifest reader and the launch binder
-//! (RFC-0015, `lantern-shell`) — later work.
+//! **The manifest is a request, not authority (RFC-0015).** [`VerifiedPackage::plan`] reads
+//! it with the same parser `lantern-sdk build` validated it with, and it decides only which
+//! host wiring this process builds and how many `open(slot)` indices exist. Everything the
+//! guest can actually reach is the capabilities this process was handed, attenuated by the
+//! services that enforce them: a manifest asking for more gets nothing more. Who consents
+//! to a request and which object it binds to remain the launch binder's job (`lantern-shell`).
 //!
-//! **Diagnostics**: every `Signal` either binary sends carries a [`Stage`] code in `a1`
+//! **Diagnostics**: every `Signal` this program sends carries a [`Stage`] code in `a1`
 //! and a detail word in `a2` (heap bytes used, on success). The kernel ignores both;
 //! `lantern-boot`'s runtime-demo trap handlers print them. There is no console syscall,
 //! and a confined program's only output channel is a capability it was granted.
@@ -45,6 +46,7 @@ use alloc::vec::Vec;
 use lantern_abi::sys;
 use lantern_abi::wire::{syscall, MessageTag};
 use lantern_runtime::{build_linker, deserialize_trusted_component, runtime_engine, GrantManifest, RuntimeState, DEFAULT_FUEL};
+use lantern_sdk::GrantPlan;
 
 /// The service's endpoint — matches `keystore-service`'s `ENDPOINT_CPTR` and the endpoint
 /// slot every `lantern-boot` demo client uses.
@@ -66,7 +68,7 @@ pub const FRAME_VADDR: usize = 0x9000_0000;
 /// Heap for `lantern-abi`'s bump allocator: Wasmtime's `Engine`/`Component`/`Store`
 /// bookkeeping and Pulley's interpreter stack. Must equal `lantern_boot::launch::HEAP_VADDR`,
 /// sized by the loader's `heap_megapages`. One `FrameMega`: measured under QEMU, a full
-/// run uses ~840 KiB (keystore guest) to ~910 KiB (filesystem guest). The bump allocator
+/// run uses ~855 KiB (keystore guest) to ~925 KiB (filesystem guest). The bump allocator
 /// never frees, so that is the whole run's total, reported back in the `SUCCESS` signal's
 /// detail word. About a third of it is [`verify_package`]'s tampered `.cwasm` copy.
 pub const HEAP_BASE: usize = 0x8620_0000;
@@ -105,6 +107,10 @@ pub enum Stage {
     /// tampered copy verified (the check itself is broken), `4` the real package did
     /// not verify.
     Package = 9,
+    /// The verified package's manifest: detail `1` failed validation, `2` declares no
+    /// resource-scoped interface, `3` declares more than this process can wire (it holds
+    /// one service endpoint), `4` asks for `monotonic-clock`, which has no confined backend.
+    Manifest = 10,
 }
 
 pub type StageResult<T> = Result<T, (Stage, usize)>;
@@ -136,9 +142,20 @@ pub fn request_grant() -> StageResult<()> {
     sys::call_with_reply_slot(ENDPOINT_CPTR, DEST_CPTR, [0, 0]).map(drop).map_err(|_| (Stage::Grant, 0))
 }
 
-/// A `.cwasm` whose package signature verified under [`PUBLISHER_KEY`]. Only
-/// [`verify_package`] constructs one, which is what lets [`run_probe`] be safe.
-pub struct VerifiedCwasm(&'static [u8]);
+/// A package whose signature verified under [`PUBLISHER_KEY`]. Only [`verify_package`]
+/// constructs one, which is what lets [`run_probe`] be safe, and what keeps unauthenticated
+/// bytes away from the manifest parser.
+pub struct VerifiedPackage {
+    manifest_bytes: &'static [u8],
+    cwasm_bytes: &'static [u8],
+}
+
+impl VerifiedPackage {
+    /// What this package's signed manifest requests, in `open(slot)` order.
+    pub fn plan(&self) -> StageResult<GrantPlan> {
+        lantern_sdk::parse_bytes(self.manifest_bytes).map(|m| m.plan()).map_err(|_| (Stage::Manifest, 1))
+    }
+}
 
 /// Read the launcher's `.lpkg` at [`PACKAGE_VADDR`] and verify it under
 /// [`PUBLISHER_KEY`].
@@ -146,7 +163,7 @@ pub struct VerifiedCwasm(&'static [u8]);
 /// First, a self-check: a copy with one `.cwasm` byte flipped must be **rejected**. A
 /// broken verifier that accepted everything would otherwise pass this demo just as well
 /// as a working one. The copy costs one `.cwasm` of heap, which never frees.
-pub fn verify_package(package_len: usize) -> StageResult<VerifiedCwasm> {
+pub fn verify_package(package_len: usize) -> StageResult<VerifiedPackage> {
     if package_len == 0 || package_len > PACKAGE_MAX_LEN {
         return Err((Stage::Package, 1));
     }
@@ -165,20 +182,18 @@ pub fn verify_package(package_len: usize) -> StageResult<VerifiedCwasm> {
     }
 
     package.verify(&PUBLISHER_KEY).map_err(|_| (Stage::Package, 4))?;
-    Ok(VerifiedCwasm(package.cwasm_bytes))
+    Ok(VerifiedPackage { manifest_bytes: package.manifest_bytes, cwasm_bytes: package.cwasm_bytes })
 }
 
-/// Deserialize `cwasm`, link exactly what `manifest` declares, instantiate against
-/// `state` with [`DEFAULT_FUEL`], and call the guest's `probe: func() -> string` export.
-///
-/// The manifest inside the package is signed but not read here: turning it into grants
-/// is the launch binder's job. `manifest` is still this binary's fixed demo grant.
-pub fn run_probe(cwasm: VerifiedCwasm, manifest: &GrantManifest, state: RuntimeState) -> StageResult<String> {
+/// Deserialize `package`'s `.cwasm`, link exactly what `manifest` declares, instantiate
+/// against `state` with [`DEFAULT_FUEL`], and call the guest's `probe: func() -> string`
+/// export.
+pub fn run_probe(package: VerifiedPackage, manifest: &GrantManifest, state: RuntimeState) -> StageResult<String> {
     let engine = runtime_engine();
-    // SAFETY: `VerifiedCwasm` exists only for bytes whose package signature verified
+    // SAFETY: `VerifiedPackage` exists only for bytes whose package signature verified
     // under `PUBLISHER_KEY` (`verify_package`) — `deserialize_trusted_component`'s
     // contract, the `.lpkg` case its own doc names.
-    let component = unsafe { deserialize_trusted_component(&engine, cwasm.0) }.map_err(|_| (Stage::Deserialize, 0))?;
+    let component = unsafe { deserialize_trusted_component(&engine, package.cwasm_bytes) }.map_err(|_| (Stage::Deserialize, 0))?;
 
     let mut linker = build_linker(&engine, manifest).map_err(|_| (Stage::Link, 0))?;
     // `std` `wasm32-wasip2` startup imports (`wasi:cli/*`, `wasi:io/*`) the guest never

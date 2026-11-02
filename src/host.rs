@@ -32,7 +32,7 @@
 //! in-process stand-ins ([`InProcessFilesystem`], and `lantern_crypto::Keystore`'s own
 //! direct [`KeystoreService`] impl) every test in this crate still uses. This crate also
 //! runs confined itself: its `no_std`/`riscv64` build (`Cargo.toml`'s `confined` feature,
-//! [`crate::platform`]) is what `confined-runtime/` links, and its two binaries run
+//! [`crate::platform`]) is what `confined-runtime/` links, and that one binary runs
 //! `IpcKeystore` against a real, separately confined `keystore-service`
 //! (`lantern-boot-runtime-demo`) and `IpcFilesystem` against a real, separately confined
 //! `store-service` (`lantern-boot-runtime-fs-demo`). The
