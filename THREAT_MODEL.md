@@ -18,7 +18,7 @@ Inherits the [system threat model](https://github.com/lantern-os/lantern-docs/bl
 | R4 | Resource exhaustion / DoS by a component | Per-component CPU/memory budgets via scheduling contexts. |
 | R5 | Malicious WIT interface confusion | Typed, versioned interfaces; governed ABI; capability checks on host calls. |
 | R6 | Compromised service abuses brokered caps | Brokers confined; least privilege; revocation. |
-| R7 | A package's manifest claims authority, or attacks its parser | The confined runtime parses a manifest only after its package signature verifies, inside the same unprivileged process. The manifest selects wiring and slot layout; authority is only the capabilities the process holds, enforced by the services that issued them. |
+| R7 | A package's manifest claims authority, or attacks its parser | The confined runtime parses a manifest only after its package signature verifies, inside the same unprivileged process. The manifest selects wiring and slot layout; authority is only the capabilities the process holds, enforced by the services that issued them. The runtime holds no service endpoint until the launch binder hands it one ([ADR-0025](https://github.com/lantern-os/lantern-rfcs/blob/main/adr/0025-launch-binder.md)), so it has no route to a grant path. |
 
 ## Non-goals
 - Defending the kernel from the runtime — that is the kernel's job (the runtime is untrusted

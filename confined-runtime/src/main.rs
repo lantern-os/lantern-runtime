@@ -3,15 +3,14 @@
 //!
 //! 1. Verify the guest's `.lpkg` the launcher mapped (see `lib.rs`).
 //! 2. Read its manifest, and refuse any request this process can't wire.
-//! 3. Request the one grant from the service at `ENDPOINT_CPTR`.
-//! 4. Back the declared interface with that grant, at slot 0.
+//! 3. Ask the launch binder for slot 0 of the declared interface.
+//! 4. Back that slot with whatever came back: a grant, or a hole if declined.
 //! 5. Run the guest's `probe`; its report must start `ok: ` and pass that interface's checks.
 //! 6. Signal `SUCCESS` or `FAILURE`.
 //!
 //! **`keystore`** (`confined-probe-guest`): [`IpcKeystore`] over the shared `Frame` to a
 //! separately confined `keystore-service`. An ENCRYPT on that SIGN-only grant must come back
-//! `ACCESS` however much the manifest asked for: the keystore-service, not this process and
-//! not the manifest, decides.
+//! `ACCESS`: the keystore-service, not this process and not the manifest, decides.
 //!
 //! **`filesystem`** (`confined-fs-guest`): [`IpcFilesystem`] over the shared `Frame` to a
 //! separately confined `store-service`, which encrypts every block through *its own* grant
@@ -28,6 +27,7 @@ extern crate alloc;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 
+use lantern_abi::grant::{INTERFACE_FILESYSTEM, INTERFACE_KEYSTORE};
 use lantern_confined_runtime::{
     check_report, request_grant, run_and_report, run_probe, verify_package, Stage, StageResult, VerifiedPackage,
     DEST_CPTR, FRAME_VADDR,
@@ -62,13 +62,14 @@ fn host_the_guest(package_len: usize) -> StageResult<()> {
 }
 
 /// Positional with holes (RFC-0015): every declared role keeps its `open(slot)` index. This
-/// process holds one grant, which backs slot 0. Later roles read `none`, as declined ones do.
-fn slots<T>(declared: usize, grant: impl Fn() -> T) -> Vec<Option<T>> {
-    (0..declared).map(|slot| (slot == 0).then(&grant)).collect()
+/// process holds at most one grant, which backs slot 0. Later roles read `none`, as declined
+/// ones do.
+fn slots<T>(declared: usize, granted: bool, grant: impl Fn() -> T) -> Vec<Option<T>> {
+    (0..declared).map(|slot| (granted && slot == 0).then(&grant)).collect()
 }
 
 fn host_keystore(package: VerifiedPackage, requests: &[ResourceRequest]) -> StageResult<()> {
-    request_grant()?;
+    let granted = request_grant(INTERFACE_KEYSTORE)?;
 
     // SAFETY: the loader mapped the shared Frame read/write at FRAME_VADDR, in this
     // program's own VSpace only alongside the keystore-service's, for this program's life.
@@ -77,16 +78,18 @@ fn host_keystore(package: VerifiedPackage, requests: &[ResourceRequest]) -> Stag
     // `HostCapability::keystore_key`'s doc).
     let key = KeyId::from_raw(0);
 
-    let mut buffer = *b"not granted";
-    match keystore.encrypt(0, key, &[0u8; lantern_crypto::aead::NONCE_LEN], b"", &mut buffer) {
-        Err(KeystoreError::RemoteDenied(lantern_crypto::wire::status::ACCESS)) => {}
-        Err(KeystoreError::RemoteDenied(status)) => return Err((Stage::Attenuation, status as usize)),
-        Err(_) => return Err((Stage::Attenuation, 0x100)),
-        Ok(_) => return Err((Stage::Attenuation, 0x200)),
+    if granted {
+        let mut buffer = *b"not granted";
+        match keystore.encrypt(0, key, &[0u8; lantern_crypto::aead::NONCE_LEN], b"", &mut buffer) {
+            Err(KeystoreError::RemoteDenied(lantern_crypto::wire::status::ACCESS)) => {}
+            Err(KeystoreError::RemoteDenied(status)) => return Err((Stage::Attenuation, status as usize)),
+            Err(_) => return Err((Stage::Attenuation, 0x100)),
+            Ok(_) => return Err((Stage::Attenuation, 0x200)),
+        }
     }
 
     let grants = || GrantManifest {
-        keystore_keys: slots(requests.len(), || HostCapability::keystore_key(0, key)),
+        keystore_keys: slots(requests.len(), granted, || HostCapability::keystore_key(0, key)),
         ..Default::default()
     };
     let state = RuntimeState::new(grants()).with_keystore(Box::new(keystore));
@@ -95,7 +98,7 @@ fn host_keystore(package: VerifiedPackage, requests: &[ResourceRequest]) -> Stag
 }
 
 fn host_filesystem(package: VerifiedPackage, requests: &[ResourceRequest]) -> StageResult<()> {
-    request_grant()?;
+    let granted = request_grant(INTERFACE_FILESYSTEM)?;
 
     // SAFETY: the loader mapped the shared Frame read/write at FRAME_VADDR, in this
     // program's own VSpace only alongside the store-service's, for this program's life.
@@ -105,7 +108,7 @@ fn host_filesystem(package: VerifiedPackage, requests: &[ResourceRequest]) -> St
     let file = FileId::from_raw(0);
 
     let grants = || GrantManifest {
-        filesystem_files: slots(requests.len(), || HostFile::filesystem_file(0, file)),
+        filesystem_files: slots(requests.len(), granted, || HostFile::filesystem_file(0, file)),
         ..Default::default()
     };
     let state = RuntimeState::new(grants()).with_filesystem(Box::new(filesystem));
