@@ -36,6 +36,6 @@ panic = "abort"
 
 [profile.release]
 panic = "abort"
-# `lantern-boot` embeds this ELF in its own kernel image, which has exactly one 2 MiB
-# megapage reserved (`lantern-boot/linker.ld`); symbols alone would overflow it.
+# `lantern-boot` embeds this ELF in its own kernel image, which reserves two 2 MiB
+# megapages (`lantern-boot/linker.ld`); symbols alone would overflow it.
 strip = true

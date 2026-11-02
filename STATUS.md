@@ -388,6 +388,14 @@
   manifest's `ops`, so `ops` are not yet enforced end to end. `monotonic-clock` is refused
   rather than linked: unlinked imports become trap stubs here, so RFC-0015's "fails to
   instantiate" would otherwise become a trap mid-run.
+- **Grants come from the launch binder (2026-11-02, [RFC-0020](https://github.com/lantern-os/lantern-rfcs/blob/main/rfcs/0020-launch-binder.md)/[ADR-0025](https://github.com/lantern-os/lantern-rfcs/blob/main/adr/0025-launch-binder.md)).**
+  The runtime holds no service endpoint: `request_grant` asks the binder for slot 0, and a declined
+  slot is a hole the guest reads as `none`. That closes the gap above: a manifest's `ops` now bound what
+  a guest can do, so a read-only role's write is refused by the service (mutation-tested: minting the
+  policy's ops instead makes the guest's write succeed, and the matrix catches it). Every successful
+  bind also checks two refusals, so a binder or service that stopped refusing can't pass: rebinding is
+  declined, and `GRANT` on the runtime's own badge returns `ACCESS`. `PUBLISHER_KEY` became
+  `TRUSTED_PUBLISHERS`, duplicating the binder's list for now (RFC-0020 unresolved question 3).
 
 ## Next
 - Wire `monotonic-clock`'s `now` to `lantern-hal`'s real `monotonic_time_ns()` on
@@ -438,9 +446,7 @@
   `IpcFilesystem` to a confined `store-service` sealing through a confined
   `keystore-service`. **Guests now arrive from the launcher as signed `.lpkg`s, verified
   before deserialize (same day, see "Done").** **One binary now takes its host wiring from
-  the package's own manifest (2026-11-02, see "Done").** Remaining: a launch-binder flow
-  replacing the demos' "first caller gets the grant", minting each grant from the manifest's
-  `ops` (today a manifest's `ops` don't narrow what the guest can do); one runtime hosting both interfaces at once (needs a
+  the package's own manifest (2026-11-02, see "Done").** **The launch binder is in (2026-11-02, see "Done").** Remaining: one runtime hosting both interfaces at once (needs a
   multi-grant `keystore-service` and more kernel capacity — `runtime-fs-demo` already
   sits at `MAX_FRAMES` 16/16 and 31/32 root CNode slots).
 - Where the compiler role physically runs (`lantern-sdk`/packaging tooling vs. an

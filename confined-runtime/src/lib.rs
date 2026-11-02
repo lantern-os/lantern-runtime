@@ -12,14 +12,15 @@
 //! the program maps itself (`lantern_runtime::platform`, granted by `lantern-boot`'s
 //! `ArenaGrant`), fuel on (Part 3); the guest's grant served over a real shared `Frame`
 //! (Part 2) by a separately confined service (Part 1), of which this process holds only
-//! the badged endpoint it was handed over IPC.
+//! the badged endpoint it was handed. It gets that from the launch binder
+//! ([RFC-0020](https://github.com/lantern-os/lantern-rfcs/blob/main/rfcs/0020-launch-binder.md)): it holds no endpoint to the
+//! service until the binder decides it should.
 //!
 //! **The guest arrives as a signed package, not in this image.** The launcher maps the
 //! guest's `.lpkg` (built by `lantern-sdk build`: manifest + `.cwasm` + an Ed25519
 //! signature over `BLAKE3(manifest) ‖ BLAKE3(cwasm)`) read-only at [`PACKAGE_VADDR`] and
 //! passes its exact length in `arg0`. [`verify_package`] checks it against
-//! [`PUBLISHER_KEY`], the one key this image trusts, and only a [`VerifiedPackage`] that
-//! check produced ever reaches Wasmtime's `deserialize` or the manifest parser. The
+//! [`TRUSTED_PUBLISHERS`], and only a [`VerifiedPackage`] that check produced ever reaches Wasmtime's `deserialize` or the manifest parser. The
 //! launcher is not trusted to hand over the right bytes: a package it altered, or one
 //! signed by anyone else, fails here at [`Stage::Package`].
 //!
@@ -27,8 +28,8 @@
 //! it with the same parser `lantern-sdk build` validated it with, and it decides only which
 //! host wiring this process builds and how many `open(slot)` indices exist. Everything the
 //! guest can actually reach is the capabilities this process was handed, attenuated by the
-//! services that enforce them: a manifest asking for more gets nothing more. Who consents
-//! to a request and which object it binds to remain the launch binder's job (`lantern-shell`).
+//! services that enforce them: a manifest asking for more gets nothing more. What a request
+//! binds to is the launch binder's decision (`lantern-shell`).
 //!
 //! **Diagnostics**: every `Signal` this program sends carries a [`Stage`] code in `a1`
 //! and a detail word in `a2` (heap bytes used, on success). The kernel ignores both;
@@ -43,20 +44,22 @@ extern crate alloc;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use lantern_abi::sys;
+use lantern_abi::frame::status;
+use lantern_abi::grant;
 use lantern_abi::wire::{syscall, MessageTag};
 use lantern_runtime::{build_linker, deserialize_trusted_component, runtime_engine, GrantManifest, RuntimeState, DEFAULT_FUEL};
 use lantern_sdk::GrantPlan;
 
-/// The service's endpoint — matches `keystore-service`'s `ENDPOINT_CPTR` and the endpoint
-/// slot every `lantern-boot` demo client uses.
+/// The launch binder's endpoint, the only thing this process can ask for a grant.
 pub const ENDPOINT_CPTR: usize = 1;
-/// Where the service's granted, badged copy lands (the reply-leg slot).
+/// Where the service's badged endpoint lands, if the binder grants one.
 pub const DEST_CPTR: usize = 2;
 /// Proof notifications — matches `lantern-boot/src/runtime_demo/loader.rs` and
 /// `runtime_fs_demo/loader.rs`.
 pub const SUCCESS_CPTR: usize = 3;
 pub const FAILURE_CPTR: usize = 4;
+/// Empty, and stays empty unless a [`request_grant`] self-check is about to fail.
+const PROBE_CPTR: usize = 5;
 // Slots 6.. hold the `ArenaGrant` (`lantern_runtime::platform`'s `SELF_VSPACE_CPTR`/
 // `ARENA_FRAME_CPTR_BASE`); nothing here names them.
 
@@ -80,14 +83,20 @@ pub const PACKAGE_VADDR: usize = 0x8c00_0000;
 /// The most the launcher maps there: one `FrameMega`.
 pub const PACKAGE_MAX_LEN: usize = 0x20_0000;
 
-/// The one publisher whose packages this image runs: the verifying half of the **demo**
-/// key both guests' `.lpkg`s are signed with (`lantern-sdk build --seed 4c4c…4c`, 32
-/// bytes of `0x4c`). The seed is public, so this proves the verification path, not
-/// any real publisher's identity. Choosing which publishers a device trusts belongs to
-/// the launch binder's trust store (RFC-0015), not to a constant in a runtime image.
-pub const PUBLISHER_KEY: [u8; 32] = [
-    0x92, 0x73, 0x08, 0xf5, 0x3d, 0x67, 0x65, 0x50, 0x3d, 0x2b, 0x64, 0xc1, 0x03, 0xab, 0x5a, 0xa4,
-    0x72, 0x06, 0xab, 0x39, 0x50, 0x2c, 0xfe, 0x8f, 0x98, 0x44, 0x2f, 0xdb, 0x54, 0x31, 0x00, 0xb7,
+/// The publishers whose packages this image runs: the verifying halves of the **demo**
+/// seeds `lantern-sdk build --seed 4c4c…4c` and `4d4d…4d`. Both are public, so this proves
+/// the verification path, not any real publisher's identity. It duplicates the launch
+/// binder's own set (RFC-0020, unresolved question 3): this process must not `deserialize`
+/// on the binder's word.
+pub const TRUSTED_PUBLISHERS: [[u8; 32]; 2] = [
+    [
+        0x92, 0x73, 0x08, 0xf5, 0x3d, 0x67, 0x65, 0x50, 0x3d, 0x2b, 0x64, 0xc1, 0x03, 0xab, 0x5a, 0xa4,
+        0x72, 0x06, 0xab, 0x39, 0x50, 0x2c, 0xfe, 0x8f, 0x98, 0x44, 0x2f, 0xdb, 0x54, 0x31, 0x00, 0xb7,
+    ],
+    [
+        0x62, 0xa6, 0x11, 0xb4, 0x72, 0xd8, 0x9b, 0x0e, 0x5f, 0xc9, 0x3c, 0x06, 0x9b, 0x9f, 0x70, 0x0b,
+        0x4c, 0x55, 0x2d, 0x55, 0xbc, 0x0e, 0x87, 0xb5, 0x60, 0x08, 0xef, 0x17, 0xb6, 0xb2, 0xbe, 0xbe,
+    ],
 ];
 
 /// What a `Signal`'s `a1` reports — see the crate doc.
@@ -135,14 +144,27 @@ pub fn run_and_report(arg0: usize, host: fn(usize) -> StageResult<()>) -> ! {
     }
 }
 
-/// `Call` the service at [`ENDPOINT_CPTR`] to be granted a badged endpoint, which lands in
-/// [`DEST_CPTR`] (`keystore-client`'s convention; stands in for the launch-binder flow,
-/// RFC-0015/`lantern-shell`).
-pub fn request_grant() -> StageResult<()> {
-    sys::call_with_reply_slot(ENDPOINT_CPTR, DEST_CPTR, [0, 0]).map(drop).map_err(|_| (Stage::Grant, 0))
+/// Ask the launch binder for slot 0 of `interface` (`lantern_abi::grant::INTERFACE_*`). The
+/// slot is the only one bound today: `IpcKeystore` and `IpcFilesystem` each wrap one
+/// `(endpoint, Frame)`. `Ok(false)` means declined, and the guest's `open(0)` reads `none`.
+///
+/// When granted, two self-checks, so a binder or service that had stopped refusing can't pass
+/// these demos: binding the same slot again must be declined, and sending `GRANT` on the
+/// badge just received must come back `ACCESS`.
+pub fn request_grant(interface: usize) -> StageResult<bool> {
+    if !grant::bind(ENDPOINT_CPTR, DEST_CPTR, interface, 0).map_err(|_| (Stage::Grant, 1))? {
+        return Ok(false);
+    }
+    if grant::bind(ENDPOINT_CPTR, PROBE_CPTR, interface, 0).map_err(|_| (Stage::Grant, 1))? {
+        return Err((Stage::Grant, 2));
+    }
+    match grant::request_grant(DEST_CPTR, PROBE_CPTR, 0, 0xf) {
+        Ok(status::ACCESS) => Ok(true),
+        _ => Err((Stage::Grant, 3)),
+    }
 }
 
-/// A package whose signature verified under [`PUBLISHER_KEY`]. Only [`verify_package`]
+/// A package whose signature verified under one of [`TRUSTED_PUBLISHERS`]. Only [`verify_package`]
 /// constructs one, which is what lets [`run_probe`] be safe, and what keeps unauthenticated
 /// bytes away from the manifest parser.
 pub struct VerifiedPackage {
@@ -158,7 +180,7 @@ impl VerifiedPackage {
 }
 
 /// Read the launcher's `.lpkg` at [`PACKAGE_VADDR`] and verify it under
-/// [`PUBLISHER_KEY`].
+/// [`TRUSTED_PUBLISHERS`].
 ///
 /// First, a self-check: a copy with one `.cwasm` byte flipped must be **rejected**. A
 /// broken verifier that accepted everything would otherwise pass this demo just as well
@@ -168,7 +190,7 @@ pub fn verify_package(package_len: usize) -> StageResult<VerifiedPackage> {
         return Err((Stage::Package, 1));
     }
     // SAFETY: the loader mapped `PACKAGE_MAX_LEN` bytes read-only at `PACKAGE_VADDR` for
-    // this program's whole life (`ProgramSpec::package`), and nothing maps over it.
+    // this program's whole life (`launch::map_package`), and nothing maps over it.
     let bytes: &'static [u8] = unsafe { core::slice::from_raw_parts(PACKAGE_VADDR as *const u8, package_len) };
     let package = lantern_sdk::package::decode_package_ref(bytes).map_err(|_| (Stage::Package, 2))?;
 
@@ -177,11 +199,13 @@ pub fn verify_package(package_len: usize) -> StageResult<VerifiedPackage> {
         *byte ^= 1;
     }
     let forged = lantern_sdk::package::PackageRef { cwasm_bytes: &tampered, ..package };
-    if forged.verify(&PUBLISHER_KEY).is_ok() {
+    if TRUSTED_PUBLISHERS.iter().any(|key| forged.verify(key).is_ok()) {
         return Err((Stage::Package, 3));
     }
 
-    package.verify(&PUBLISHER_KEY).map_err(|_| (Stage::Package, 4))?;
+    if !TRUSTED_PUBLISHERS.iter().any(|key| package.verify(key).is_ok()) {
+        return Err((Stage::Package, 4));
+    }
     Ok(VerifiedPackage { manifest_bytes: package.manifest_bytes, cwasm_bytes: package.cwasm_bytes })
 }
 
@@ -191,7 +215,7 @@ pub fn verify_package(package_len: usize) -> StageResult<VerifiedPackage> {
 pub fn run_probe(package: VerifiedPackage, manifest: &GrantManifest, state: RuntimeState) -> StageResult<String> {
     let engine = runtime_engine();
     // SAFETY: `VerifiedPackage` exists only for bytes whose package signature verified
-    // under `PUBLISHER_KEY` (`verify_package`) — `deserialize_trusted_component`'s
+    // under `TRUSTED_PUBLISHERS` (`verify_package`) — `deserialize_trusted_component`'s
     // contract, the `.lpkg` case its own doc names.
     let component = unsafe { deserialize_trusted_component(&engine, package.cwasm_bytes) }.map_err(|_| (Stage::Deserialize, 0))?;
 
