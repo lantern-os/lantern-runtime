@@ -6,7 +6,9 @@
 //! 3. Ask the launch binder for slot 0 of the declared interface.
 //! 4. Back that slot with whatever came back: a grant, or a hole if declined.
 //! 5. Run the guest's `probe`; its report must start `ok: ` and pass that interface's checks.
-//! 6. Signal `SUCCESS` or `FAILURE`.
+//! 6. Have the grant revoked with a request left open, and run `probe` again; it must report
+//!    the refusal (RFC-0021).
+//! 7. Signal `SUCCESS` or `FAILURE`.
 //!
 //! **`keystore`** (`confined-probe-guest`): [`IpcKeystore`] over the shared `Frame` to a
 //! separately confined `keystore-service`. An ENCRYPT on that SIGN-only grant must come back
@@ -29,8 +31,8 @@ use alloc::vec::Vec;
 
 use lantern_abi::grant::{INTERFACE_FILESYSTEM, INTERFACE_KEYSTORE};
 use lantern_confined_runtime::{
-    check_report, request_grant, run_and_report, run_probe, verify_package, Stage, StageResult, VerifiedPackage,
-    DEST_CPTR, FRAME_VADDR,
+    request_grant, run_and_report, run_probe, verify_package, ProbeChecks, Stage, StageResult, VerifiedPackage, DEST_CPTR,
+    FRAME_VADDR,
 };
 use lantern_crypto::{KeyId, KeystoreError};
 use lantern_filesystem::FileId;
@@ -93,8 +95,12 @@ fn host_keystore(package: VerifiedPackage, requests: &[ResourceRequest]) -> Stag
         ..Default::default()
     };
     let state = RuntimeState::new(grants()).with_keystore(Box::new(keystore));
-    let report = run_probe(package, &grants(), state)?;
-    check_report(&report, &["keystore.open(1)=none"])
+    let checks = ProbeChecks {
+        required: &["keystore.open(1)=none"],
+        open_op: lantern_crypto::wire::OP_SIGN,
+        refused: "keystore denied",
+    };
+    run_probe(package, &grants(), state, checks)
 }
 
 fn host_filesystem(package: VerifiedPackage, requests: &[ResourceRequest]) -> StageResult<()> {
@@ -112,6 +118,10 @@ fn host_filesystem(package: VerifiedPackage, requests: &[ResourceRequest]) -> St
         ..Default::default()
     };
     let state = RuntimeState::new(grants()).with_filesystem(Box::new(filesystem));
-    let report = run_probe(package, &grants(), state)?;
-    check_report(&report, &["oversized write=invalid", "content intact", "filesystem.open(1)=none"])
+    let checks = ProbeChecks {
+        required: &["oversized write=invalid", "content intact", "filesystem.open(1)=none"],
+        open_op: lantern_filesystem::wire::OP_READ,
+        refused: "\"access\"",
+    };
+    run_probe(package, &grants(), state, checks)
 }

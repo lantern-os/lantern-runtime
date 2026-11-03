@@ -396,6 +396,11 @@
   bind also checks two refusals, so a binder or service that stopped refusing can't pass: rebinding is
   declined, and `GRANT` on the runtime's own badge returns `ACCESS`. `PUBLISHER_KEY` became
   `TRUSTED_PUBLISHERS`, duplicating the binder's list for now (RFC-0020 unresolved question 3).
+- **A grant can end (2026-11-02, [RFC-0021](https://github.com/lantern-os/lantern-rfcs/blob/main/rfcs/0021-grant-ledger-and-revocation.md)/[ADR-0026](https://github.com/lantern-os/lantern-rfcs/blob/main/adr/0026-grant-ledger-and-revocation.md)).** After the guest's first `probe` passes, the runtime leaves a
+  request open at the service and has `grant-control` revoke the grant. The open request must come back
+  `ACCESS`, and a second `probe` on the same instance must report the refusal, for both interfaces. It
+  also checks its own badge can't reach the binder's control ops. Revocation looks forward only: what
+  the guest already signed or read stays with it, and it keeps its kernel capability and mapped `Frame`.
 
 ## Next
 - Wire `monotonic-clock`'s `now` to `lantern-hal`'s real `monotonic_time_ns()` on
