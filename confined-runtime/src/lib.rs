@@ -150,9 +150,17 @@ pub struct ProbeChecks<'a> {
 
 pub type StageResult<T> = Result<T, (Stage, usize)>;
 
+/// Set from `arg0`'s `grant::WITH_CONSENT` bit: this runtime is part of the interactive system
+/// ([RFC-0026](https://github.com/lantern-os/lantern-rfcs/blob/main/rfcs/0026-trusted-path-and-consent.md)), where a person, not `grant-control`, decides
+/// and revokes. The guest's `probe` then runs once, and there's no revocation choreography to wait for.
+static SYSTEM: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
 /// The whole program, after `lantern_abi::entry!`: set up the heap and panic reporting,
-/// run `host` with `arg0` (the package length), signal its outcome, park.
+/// run `host` with the package length, signal its outcome, park. `arg0` is that length, with
+/// `grant::WITH_CONSENT` set in the interactive system.
 pub fn run_and_report(arg0: usize, host: fn(usize) -> StageResult<()>) -> ! {
+    SYSTEM.store(arg0 & lantern_abi::grant::WITH_CONSENT != 0, core::sync::atomic::Ordering::Relaxed);
+    let arg0 = arg0 & (lantern_abi::grant::WITH_CONSENT - 1);
     // SAFETY: the loader mapped `HEAP_BASE..+HEAP_LEN` read/write into this program's own
     // VSpace before its first instruction ran (`ProgramSpec::heap_megapages`).
     unsafe { lantern_abi::rt::init_heap(HEAP_BASE, HEAP_LEN) };
@@ -165,10 +173,17 @@ pub fn run_and_report(arg0: usize, host: fn(usize) -> StageResult<()>) -> ! {
     };
     signal_with(cptr, stage, detail);
 
+    // In the interactive system, wait on a notification nothing signals, so a finished app doesn't keep the hart busy
+    // and the kernel can idle. Without one (the demos), `wait` fails at once, and this spins, as it always did.
     loop {
-        core::hint::spin_loop();
+        if sys::wait(PARK_CPTR).is_err() {
+            core::hint::spin_loop();
+        }
     }
 }
+
+/// The interactive system's park notification (RFC-0026). Must equal the system loader's `RUNTIME_PARK_CPTR`.
+const PARK_CPTR: usize = 12;
 
 /// Ask the launch binder for slot 0 of `interface` (`lantern_abi::grant::INTERFACE_*`). The
 /// slot is the only one bound today: `IpcKeystore` and `IpcFilesystem` each wrap one
@@ -267,6 +282,9 @@ pub fn run_probe(package: VerifiedPackage, manifest: &GrantManifest, state: Runt
         .map_err(|_| (Stage::Lookup, 0))?;
     let (report,) = probe.call(&mut store, ()).map_err(|_| (Stage::Call, 0))?;
     check_report(&report, checks.required)?;
+    if SYSTEM.load(core::sync::atomic::Ordering::Relaxed) {
+        return Ok(());
+    }
 
     revoke_during_open_request(checks.open_op)?;
 

@@ -402,6 +402,9 @@
   also checks its own badge can't reach the binder's control ops. Revocation looks forward only: what
   the guest already signed or read stays with it, and it keeps its kernel capability and mapped `Frame`.
 
+- **System mode (2026-11-11, [RFC-0026](https://github.com/lantern-os/lantern-rfcs/blob/main/rfcs/0026-trusted-path-and-consent.md)/[ADR-0032](https://github.com/lantern-os/lantern-rfcs/blob/main/adr/0032-trusted-path-and-consent.md)).** With `grant::WITH_CONSENT` in `arg0`, `confined-runtime` runs the guest's `probe` once and
+  reports, with no `grant-control` choreography, since a person decides and revokes. After reporting, it waits on slot 12's
+  notification instead of spinning, so a finished app lets the kernel idle; without one, it spins as before.
 ## Next
 - Wire `monotonic-clock`'s `now` to `lantern-hal`'s real `monotonic_time_ns()` on
   `riscv64` (host target keeps the shim until the x86-64 HAL clock stops being a stub).
