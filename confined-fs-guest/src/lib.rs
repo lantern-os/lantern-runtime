@@ -30,12 +30,13 @@ impl Guest for Probe {
             return String::from("error: the manifest granted no file at filesystem slot 0");
         };
 
-        // A fresh file reads back empty, not an error (WIT: "an unwritten file reads as
-        // empty").
+        // A file outlives a run of the app (RFC-0029: a person can run it again). So it reads
+        // back either empty, the first time (WIT: "an unwritten file reads as empty", not an
+        // error), or exactly what this app wrote last time, and nothing else.
         match file.read() {
-            Ok(bytes) if bytes.is_empty() => {}
-            Ok(bytes) => return format!("error: a fresh file read back {} bytes, not 0", bytes.len()),
-            Err(e) => return format!("error: reading the fresh file failed: {e:?}"),
+            Ok(bytes) if bytes.is_empty() || bytes == CONTENT => {}
+            Ok(bytes) => return format!("error: the file read back {} bytes this app never wrote", bytes.len()),
+            Err(e) => return format!("error: reading the file failed: {e:?}"),
         }
 
         if let Err(e) = file.write(CONTENT) {

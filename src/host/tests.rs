@@ -626,7 +626,8 @@ use lantern_kernel::state::KernelState;
 
 /// The same two-party service/client shape `lantern-crypto`'s own test suite uses.
 struct RealCrypto {
-    state: KernelState,
+    /// Boxed: a debug build keeps several copies of a moved `KernelState` on the stack, and it's large.
+    state: Box<KernelState>,
     keystore: Keystore,
     keystore_tcb: TcbId,
     client_tcb: TcbId,
@@ -638,7 +639,7 @@ const SCRATCH_SLOT: CPtr = 6;
 const CLIENT_DEST_SLOT: usize = 9;
 
 fn real_crypto() -> RealCrypto {
-    let mut state = KernelState::new();
+    let mut state = Box::new(KernelState::new());
 
     let ks_cnode = CNodeId(state.cnodes.alloc(CNode::empty()).unwrap() as u16);
     let keystore_tcb = TcbId(state.tcbs.alloc(Tcb::new()).unwrap() as u16);
@@ -696,7 +697,8 @@ impl RealCrypto {
 /// `lantern-filesystem`'s own test suite uses, trimmed for these tests. A real `Store`
 /// with its store-wide AEAD key held in a real `Keystore`, plus file-access grants.
 struct RealFs {
-    state: KernelState,
+    /// Boxed: a debug build keeps several copies of a moved `KernelState` on the stack, and it's large.
+    state: Box<KernelState>,
     keystore: Keystore,
     store: lantern_filesystem::Store,
     store_tcb: TcbId,
@@ -730,7 +732,7 @@ fn source_notif(state: &mut KernelState, cnode: CNodeId) {
 fn real_fs(content: Option<&[u8]>) -> RealFs {
     use lantern_filesystem::FileOps;
 
-    let mut state = KernelState::new();
+    let mut state = Box::new(KernelState::new());
 
     let (ks_cnode, ks_tcb) = new_cnode_tcb(&mut state);
     source_notif(&mut state, ks_cnode);

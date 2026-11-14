@@ -136,6 +136,10 @@ pub enum Stage {
     Revocation = 11,
     /// `grant-control` found something wrong; detail is its step. It signals this itself.
     Control = 12,
+    /// [RFC-0029](https://github.com/lantern-os/lantern-rfcs/blob/main/rfcs/0029-a-confined-launcher.md): the shared `Frame` wasn't clean before this
+    /// process first used it, so it could show what an earlier app, or its service, left there. A launcher bug; detail
+    /// is the first non-zero byte's offset.
+    Channel = 13,
 }
 
 /// What a guest's two `probe` calls must show.
@@ -166,7 +170,12 @@ pub fn run_and_report(arg0: usize, host: fn(usize) -> StageResult<()>) -> ! {
     unsafe { lantern_abi::rt::init_heap(HEAP_BASE, HEAP_LEN) };
     lantern_abi::rt::report_panics_via(FAILURE_CPTR);
 
-    let (cptr, stage, detail) = match host(arg0) {
+    // Before anything uses the shared `Frame`, it must be clean: a launcher that reuses one between apps clears it first.
+    // SAFETY: the loader mapped the shared Frame read/write at FRAME_VADDR, 4 KiB, before this program's first
+    // instruction, and nothing here has touched it yet.
+    let channel = unsafe { core::slice::from_raw_parts(FRAME_VADDR as *const u8, 4096) };
+    let dirty = channel.iter().position(|&b| b != 0);
+    let (cptr, stage, detail) = match dirty.map_or_else(|| host(arg0), |at| Err((Stage::Channel, at))) {
         // `heap_stats().0` is the bump pointer (an address), not a byte count.
         Ok(()) => (SUCCESS_CPTR, Stage::Done, lantern_abi::rt::heap_stats().0 - HEAP_BASE),
         Err((stage, detail)) => (FAILURE_CPTR, stage, detail),
