@@ -405,6 +405,11 @@
 - **System mode (2026-11-11, [RFC-0026](https://github.com/lantern-os/lantern-rfcs/blob/main/rfcs/0026-trusted-path-and-consent.md)/[ADR-0032](https://github.com/lantern-os/lantern-rfcs/blob/main/adr/0032-trusted-path-and-consent.md)).** With `grant::WITH_CONSENT` in `arg0`, `confined-runtime` runs the guest's `probe` once and
   reports, with no `grant-control` choreography, since a person decides and revokes. After reporting, it waits on slot 12's
   notification instead of spinning, so a finished app lets the kernel idle; without one, it spins as before.
+- **Run by the launcher (2026-11-14, [RFC-0029](https://github.com/lantern-os/lantern-rfcs/blob/main/rfcs/0029-a-confined-launcher.md)/[ADR-0035](https://github.com/lantern-os/lantern-rfcs/blob/main/adr/0035-a-confined-launcher.md)).** `confined-runtime` refuses a shared `Frame` that isn't clean before its
+  first use (`Stage::Channel`, 13), which catches a launcher that doesn't clear a channel between apps. `confined-fs-guest`
+  accepts a file holding what it wrote last time, since a file now outlives a run. `fs-probe.lpkg` and
+  `fs-probe.pulley.cwasm` were rebuilt together. Host-test fixtures box their `KernelState`, which grew with the kernel's
+  pools.
 ## Next
 - Wire `monotonic-clock`'s `now` to `lantern-hal`'s real `monotonic_time_ns()` on
   `riscv64` (host target keeps the shim until the x86-64 HAL clock stops being a stub).
