@@ -1,0 +1,20 @@
+[package]
+name = "lantern-runtime-greeter-guest"
+version = "0.0.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+publish = false
+description = "RFC-0035's greeter: a confined Wasm app that says hello to two peers, as a different pairwise identity to each, through the wallet. Imports lantern:host/identity and nothing else. Not part of lantern-runtime's own build."
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen = "0.57"
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true
+codegen-units = 1
+panic = "abort"

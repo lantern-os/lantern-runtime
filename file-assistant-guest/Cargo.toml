@@ -1,0 +1,20 @@
+[package]
+name = "lantern-runtime-file-assistant-guest"
+version = "0.0.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+publish = false
+description = "RFC-0034's file assistant: a confined Wasm agent that reads one granted file, asks the local language model to continue it, and writes the continuation to a second granted file. Imports lantern:host/filesystem and lantern:host/inference and nothing else. Not part of lantern-runtime's own build."
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen = "0.57"
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true
+codegen-units = 1
+panic = "abort"

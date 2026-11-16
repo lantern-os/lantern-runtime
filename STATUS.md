@@ -410,6 +410,15 @@
   accepts a file holding what it wrote last time, since a file now outlives a run. `fs-probe.lpkg` and
   `fs-probe.pulley.cwasm` were rebuilt together. Host-test fixtures box their `KernelState`, which grew with the kernel's
   pools.
+- **Apps, and the language model (2026-11-16, [RFC-0034](https://github.com/lantern-os/lantern-rfcs/blob/main/rfcs/0034-local-inference-and-a-file-assistant.md)/[ADR-0039](https://github.com/lantern-os/lantern-rfcs/blob/main/adr/0039-local-inference-and-a-file-assistant.md)).** `lantern:host/inference` (resource-scoped: `open`, then
+  `model.generate`), `HostModel`, `InferenceService` and `IpcInference`. `IpcFilesystem::routed` serves several file
+  grants over one channel, each call to the slot its handle's badge names. `confined-runtime`'s app mode, for any app
+  that isn't a one-interface probe: every declared role bound into its own slot, then the guest's `run` once; each
+  interface's channel checked clean first. New guest `file-assistant-guest` and its package. 30 tests, 5 of them running
+  the real file assistant through Wasmtime against stand-in services.
+- **Identity (2026-11-16, [RFC-0035](https://github.com/lantern-os/lantern-rfcs/blob/main/rfcs/0035-pairwise-network-identities.md)/[ADR-0040](https://github.com/lantern-os/lantern-rfcs/blob/main/adr/0040-pairwise-network-identities.md)).** `lantern:host/identity` (`open`, then `context.connect`, `send`, `recv`), `HostContext`,
+  `IdentityService` and `IpcIdentity`, wired in `confined-runtime`'s app mode. New guest `greeter-guest` and its package.
+  33 tests, 3 running the real greeter against a stand-in wallet.
 ## Next
 - Wire `monotonic-clock`'s `now` to `lantern-hal`'s real `monotonic_time_ns()` on
   `riscv64` (host target keeps the shim until the x86-64 HAL clock stops being a stub).

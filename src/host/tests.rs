@@ -609,6 +609,225 @@ mod fs {
 }
 
 // ---------------------------------------------------------------------------------
+// RFC-0034: inference, and the file assistant that uses it, against stand-in services
+// ---------------------------------------------------------------------------------
+
+mod assistant {
+    use super::*;
+    use crate::host::{HostModel, InferenceError, InferenceService};
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex};
+
+    /// Files by badge: what a store would hold for each grant.
+    #[derive(Clone, Default)]
+    struct Files(Arc<Mutex<HashMap<u64, Vec<u8>>>>);
+
+    impl FilesystemService for Files {
+        fn read(&self, badge: u64, _file: FileId, buffer: &mut [u8]) -> Result<usize, StoreError> {
+            let files = self.0.lock().unwrap();
+            let bytes = files.get(&badge).ok_or(StoreError::UnknownBadge)?;
+            buffer[..bytes.len()].copy_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn write(&mut self, badge: u64, _file: FileId, data: &[u8]) -> Result<(), StoreError> {
+            self.0.lock().unwrap().insert(badge, data.to_vec());
+            Ok(())
+        }
+    }
+
+    /// Each call a [`Model`] saw: the badge, the prompt and the tokens asked for.
+    type Calls = Vec<(u64, Vec<u8>, usize)>;
+
+    /// A model that answers `reply`, or `error`, and records each call.
+    #[derive(Clone)]
+    struct Model {
+        reply: Vec<u8>,
+        error: Option<InferenceError>,
+        calls: Arc<Mutex<Calls>>,
+    }
+
+    impl InferenceService for Model {
+        fn generate(&mut self, badge: u64, prompt: &[u8], max_tokens: usize) -> Result<Vec<u8>, InferenceError> {
+            self.calls.lock().unwrap().push((badge, prompt.to_vec(), max_tokens));
+            match self.error {
+                Some(e) => Err(e),
+                None => Ok(self.reply.clone()),
+            }
+        }
+    }
+
+    const INPUT: u64 = 13;
+    const OUTPUT: u64 = 14;
+    const MODEL: u64 = 15;
+
+    /// Runs the file assistant with `input` in its input file, the model granted or not, and returns its report, what
+    /// its output file holds, and the model's calls.
+    fn run(input: &[u8], model_granted: bool, model: Model) -> (String, Option<Vec<u8>>, Calls) {
+        let cwasm = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/file-assistant-guest/assets/file-assistant.pulley.cwasm"))
+            .expect("regenerate via `cargo run --example precompile --features compiler`");
+        let files = Files::default();
+        files.0.lock().unwrap().insert(INPUT, input.to_vec());
+        let file = FileId::from_raw(1);
+        let grants = || GrantManifest {
+            filesystem_files: vec![Some(HostFile::filesystem_file(INPUT, file)), Some(HostFile::filesystem_file(OUTPUT, file))],
+            inference_models: vec![model_granted.then(|| HostModel::inference_model(MODEL))],
+            ..Default::default()
+        };
+        let engine = crate::verified::runtime_engine();
+        // SAFETY: this crate's own build output, regenerated from trusted source in this repo.
+        let component = unsafe { crate::deserialize_trusted_component(&engine, &cwasm) }.unwrap();
+        let mut linker = build_linker(&engine, &grants()).unwrap();
+        linker.define_unknown_imports_as_traps(&component).unwrap();
+        let state = RuntimeState::new(grants()).with_filesystem(Box::new(files.clone())).with_inference(Box::new(model.clone()));
+        let mut store = wasmtime::Store::new(&engine, state);
+        store.set_fuel(crate::verified::DEFAULT_FUEL).unwrap();
+        let instance = linker.instantiate(&mut store, &component).unwrap();
+        let run = instance.get_typed_func::<(), (String,)>(&mut store, "run").unwrap();
+        let (report,) = run.call(&mut store, ()).unwrap();
+        let output = files.0.lock().unwrap().get(&OUTPUT).cloned();
+        let calls = model.calls.lock().unwrap().clone();
+        (report, output, calls)
+    }
+
+    fn model(reply: &[u8]) -> Model {
+        Model { reply: reply.to_vec(), error: None, calls: Arc::default() }
+    }
+
+    #[test]
+    fn it_reads_its_input_asks_the_model_through_its_own_badge_and_writes_only_its_output() {
+        let (report, output, calls) = run(b"Once upon a time\n", true, model(b", there was a cat."));
+        assert_eq!(report, "ok: wrote 18 bytes");
+        assert_eq!(output.as_deref(), Some(b", there was a cat.".as_slice()));
+        assert_eq!(calls, [(MODEL, b"Once upon a time".to_vec(), 64)], "the trimmed text, 64 tokens, under its model badge");
+    }
+
+    #[test]
+    fn without_the_model_it_writes_nothing_and_says_access() {
+        let m = model(b"x");
+        let (report, output, calls) = run(b"text", false, m);
+        assert!(report.starts_with("error: access"), "{report}");
+        assert_eq!(output, None);
+        assert!(calls.is_empty());
+    }
+
+    #[test]
+    fn a_refusal_from_the_service_is_reported_and_nothing_is_written() {
+        let m = Model { error: Some(InferenceError::Remote(lantern_abi::frame::status::ACCESS)), ..model(b"") };
+        let (report, output, _) = run(b"text", true, m);
+        assert_eq!(report, "error: the model: access");
+        assert_eq!(output, None);
+        let m = Model { error: Some(InferenceError::Remote(lantern_abi::frame::status::FAILED)), ..model(b"") };
+        assert_eq!(run(b"text", true, m).0, "error: the model: failed: no model");
+    }
+
+    #[test]
+    fn a_long_answer_is_cut_to_what_a_file_holds_at_a_word_and_bad_utf8_is_replaced() {
+        let long = "The dog ran. ".repeat(40);
+        let (report, output, _) = run(b"text", true, model(long.as_bytes()));
+        let output = output.unwrap();
+        assert!(output.len() <= lantern_filesystem::MAX_BLOCK_LEN && output.ends_with(b"ran."), "{report} {output:?}");
+        // A token can end mid-character: the guest gets a replacement character, not an error.
+        let (_, output, _) = run(b"text", true, model(b"caf\xc3"));
+        assert_eq!(output.as_deref(), Some("caf\u{fffd}".as_bytes()));
+    }
+
+    #[test]
+    fn an_empty_input_is_refused_before_the_model_is_asked() {
+        let (report, output, calls) = run(b"", true, model(b"x"));
+        assert!(report.starts_with("error: the input file is empty"), "{report}");
+        assert!(output.is_none() && calls.is_empty());
+    }
+}
+
+// ---------------------------------------------------------------------------------
+// RFC-0035: identity, and the greeter that uses it, against a stand-in wallet
+// ---------------------------------------------------------------------------------
+
+mod greeter {
+    use super::*;
+    use crate::host::{HostContext, IdentityService};
+    use std::sync::{Arc, Mutex};
+
+    /// Each call the wallet saw: the op and the badge.
+    type Calls = Vec<(&'static str, u64)>;
+
+    /// A wallet whose peers answer by badge, or fail with `error`.
+    #[derive(Clone, Default)]
+    struct Wallet {
+        error: Option<u16>,
+        calls: Arc<Mutex<Calls>>,
+    }
+
+    impl IdentityService for Wallet {
+        fn connect(&mut self, badge: u64) -> Result<(), u16> {
+            self.calls.lock().unwrap().push(("connect", badge));
+            self.error.map_or(Ok(()), Err)
+        }
+        fn send(&mut self, badge: u64, message: &[u8]) -> Result<(), u16> {
+            assert_eq!(message, b"hello from greeter");
+            self.calls.lock().unwrap().push(("send", badge));
+            Ok(())
+        }
+        fn recv(&mut self, badge: u64) -> Result<Vec<u8>, u16> {
+            self.calls.lock().unwrap().push(("recv", badge));
+            Ok(format!("welcome, {badge}\n").into_bytes())
+        }
+    }
+
+    fn run(granted: [bool; 2], wallet: Wallet) -> (String, Calls) {
+        let cwasm = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/greeter-guest/assets/greeter.pulley.cwasm"))
+            .expect("regenerate via `cargo run --example precompile --features compiler`");
+        let grants = || GrantManifest {
+            identity_contexts: vec![
+                granted[0].then(|| HostContext::identity_context(13)),
+                granted[1].then(|| HostContext::identity_context(14)),
+            ],
+            ..Default::default()
+        };
+        let engine = crate::verified::runtime_engine();
+        // SAFETY: this crate's own build output, regenerated from trusted source in this repo.
+        let component = unsafe { crate::deserialize_trusted_component(&engine, &cwasm) }.unwrap();
+        let mut linker = build_linker(&engine, &grants()).unwrap();
+        linker.define_unknown_imports_as_traps(&component).unwrap();
+        let state = RuntimeState::new(grants()).with_identity(Box::new(wallet.clone()));
+        let mut store = wasmtime::Store::new(&engine, state);
+        store.set_fuel(crate::verified::DEFAULT_FUEL).unwrap();
+        let instance = linker.instantiate(&mut store, &component).unwrap();
+        let run = instance.get_typed_func::<(), (String,)>(&mut store, "run").unwrap();
+        let (report,) = run.call(&mut store, ()).unwrap();
+        let calls = wallet.calls.lock().unwrap().clone();
+        (report, calls)
+    }
+
+    #[test]
+    fn it_greets_each_peer_through_its_own_context_and_never_names_a_key() {
+        let (report, calls) = run([true, true], Wallet::default());
+        assert_eq!(report, "ok: alice said \"welcome, 13\"; bob said \"welcome, 14\";");
+        let ops: Vec<_> = calls.iter().map(|(op, _)| *op).collect();
+        assert_eq!(ops, ["connect", "send", "recv", "connect", "send", "recv"]);
+        assert!(calls[..3].iter().all(|&(_, b)| b == 13) && calls[3..].iter().all(|&(_, b)| b == 14));
+    }
+
+    #[test]
+    fn a_declined_peer_is_skipped_and_none_at_all_is_an_error() {
+        let (report, calls) = run([true, false], Wallet::default());
+        assert_eq!(report, "ok: alice said \"welcome, 13\"; bob: not granted;");
+        assert!(calls.iter().all(|&(_, b)| b == 13));
+        let (report, calls) = run([false, false], Wallet::default());
+        assert!(report.starts_with("error: access"), "{report}");
+        assert!(calls.is_empty());
+    }
+
+    #[test]
+    fn a_handshake_that_doesnt_authenticate_is_reported_as_refused() {
+        let wallet = Wallet { error: Some(lantern_abi::identity::REFUSED), ..Default::default() };
+        let (report, calls) = run([true, true], wallet);
+        assert_eq!(report, "error: alice: refused");
+        assert_eq!(calls, [("connect", 13)], "nothing is sent on a session that never authenticated");
+    }
+}
+
+// ---------------------------------------------------------------------------------
 // Fixtures
 // ---------------------------------------------------------------------------------
 

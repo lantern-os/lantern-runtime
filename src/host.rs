@@ -41,6 +41,10 @@
 
 #[cfg(not(feature = "std"))]
 use alloc::{boxed::Box, vec, vec::Vec};
+#[cfg(not(feature = "std"))]
+use alloc::string as alloc_string;
+#[cfg(feature = "std")]
+use std::string as alloc_string;
 
 use wasmtime::component::{Linker, Resource, ResourceTable};
 use wasmtime::Engine;
@@ -57,10 +61,12 @@ wasmtime::component::bindgen!({
         // record type, not a bindgen-generated one.
         "lantern:host/keystore.key": HostCapability,
         "lantern:host/filesystem.file": HostFile,
+        "lantern:host/inference.model": HostModel,
+        "lantern:host/identity.context": HostContext,
     },
 });
 
-pub use self::lantern::host::{filesystem, keystore, monotonic_clock};
+pub use self::lantern::host::{filesystem, identity, inference, keystore, monotonic_clock};
 
 // -------------------------------------------------------------------------------------
 // The host-side capability record (ADR-0018, "the host-side capability record")
@@ -130,6 +136,54 @@ impl HostFile {
 // -------------------------------------------------------------------------------------
 // The owning crypto service, as the mapping sees it
 // -------------------------------------------------------------------------------------
+
+/// What one `inference` `model` handle is backed by (RFC-0034): the badge the binder granted on the inference service.
+/// With an [`IpcInference`], the badge is the capability slot that badged endpoint landed in.
+#[derive(Clone, Copy, Debug)]
+pub struct HostModel {
+    badge: u64,
+}
+
+impl HostModel {
+    pub fn inference_model(badge: u64) -> Self {
+        Self { badge }
+    }
+}
+
+/// What one `identity` `context` handle is backed by (RFC-0035): the badge the binder granted on the wallet, which, with
+/// [`IpcIdentity`], is the slot that badged endpoint landed in.
+#[derive(Clone, Copy, Debug)]
+pub struct HostContext {
+    badge: u64,
+}
+
+impl HostContext {
+    pub fn identity_context(badge: u64) -> Self {
+        Self { badge }
+    }
+}
+
+/// The wallet, as the runtime reaches it. Every call takes the badge, which the wallet re-checks; an error is its
+/// RFC-0019 status, or [`lantern_abi::identity::REFUSED`].
+pub trait IdentityService: Send + Sync {
+    fn connect(&mut self, badge: u64) -> Result<(), u16>;
+    fn send(&mut self, badge: u64, message: &[u8]) -> Result<(), u16>;
+    fn recv(&mut self, badge: u64) -> Result<Vec<u8>, u16>;
+}
+
+/// Why a `generate` failed, as the service said.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum InferenceError {
+    /// An RFC-0019 status from the service.
+    Remote(u16),
+    /// The channel to it failed.
+    Channel,
+}
+
+/// The inference service, as the runtime reaches it. Every call takes the badge, which the service re-checks.
+pub trait InferenceService: Send + Sync {
+    fn generate(&mut self, badge: u64, prompt: &[u8], max_tokens: usize) -> Result<Vec<u8>, InferenceError>;
+}
 
 /// The crypto service reached over (eventually) IPC. Implemented for
 /// `lantern_crypto::Keystore` directly today because no confined crypto service exists
@@ -403,19 +457,48 @@ impl FilesystemService for InProcessFilesystem {
 /// [`IpcKeystore`] — see its doc.
 pub struct IpcFilesystem {
     channel: SingleThreadCell<lantern_abi::frame::Channel>,
+    /// RFC-0034: with several file grants, each handle's badge is the slot its own badged endpoint landed in, and every
+    /// call goes there, over the one channel this app shares with the store.
+    frame: *mut u8,
+    routed: bool,
 }
+
+// SAFETY: as `lantern_abi::frame::Channel`'s own `Send`: a confined program is single-hart, and `frame` is only ever
+// used through a `Channel` built from it.
+unsafe impl Send for IpcFilesystem {}
+// SAFETY: as above; every use goes through `channel`'s `SingleThreadCell`.
+unsafe impl Sync for IpcFilesystem {}
 
 impl IpcFilesystem {
     /// # Safety
     /// As [`lantern_abi::frame::Channel::new`]'s.
     pub unsafe fn new(endpoint: lantern_abi::wire::CPtr, frame: *mut u8) -> Self {
         // SAFETY: forwarded from this function's own contract.
-        Self { channel: SingleThreadCell::new(unsafe { lantern_abi::frame::Channel::new(endpoint, frame) }) }
+        Self { channel: SingleThreadCell::new(unsafe { lantern_abi::frame::Channel::new(endpoint, frame) }), frame, routed: false }
+    }
+
+    /// One relationship per file grant, all over the channel at `frame`: each call goes to the endpoint in the slot its
+    /// handle's badge names.
+    ///
+    /// # Safety
+    /// As [`new`](Self::new)'s, and every [`HostFile`] badge used with it must be a slot holding a badged endpoint to the
+    /// store that serves `frame`.
+    pub unsafe fn routed(frame: *mut u8) -> Self {
+        // SAFETY: forwarded from this function's own contract; the endpoint is replaced on every call.
+        Self { channel: SingleThreadCell::new(unsafe { lantern_abi::frame::Channel::new(0, frame) }), frame, routed: true }
+    }
+
+    fn route(&self, badge: u64) {
+        if self.routed {
+            // SAFETY: `frame` met `routed`'s contract when this was built, and nothing holds the old channel now.
+            *self.channel.borrow_mut() = unsafe { lantern_abi::frame::Channel::new(badge as lantern_abi::wire::CPtr, self.frame) };
+        }
     }
 }
 
 impl FilesystemService for IpcFilesystem {
-    fn read(&self, _badge: u64, _file: FileId, buffer: &mut [u8]) -> Result<usize, StoreError> {
+    fn read(&self, badge: u64, _file: FileId, buffer: &mut [u8]) -> Result<usize, StoreError> {
+        self.route(badge);
         let mut channel = self.channel.borrow_mut();
         let (status, len) = channel.call(lantern_filesystem::wire::OP_READ, &[], buffer).map_err(StoreError::Channel)?;
         if status != lantern_filesystem::wire::status::OK {
@@ -424,7 +507,8 @@ impl FilesystemService for IpcFilesystem {
         Ok(len)
     }
 
-    fn write(&mut self, _badge: u64, _file: FileId, data: &[u8]) -> Result<(), StoreError> {
+    fn write(&mut self, badge: u64, _file: FileId, data: &[u8]) -> Result<(), StoreError> {
+        self.route(badge);
         let mut channel = self.channel.borrow_mut();
         let (status, _len) = channel.call(lantern_filesystem::wire::OP_WRITE, data, &mut []).map_err(StoreError::Channel)?;
         if status != lantern_filesystem::wire::status::OK {
@@ -448,6 +532,108 @@ fn to_fs_error_code(err: StoreError) -> filesystem::ErrorCode {
         // `RemoteDenied` reasoning, one layer up.
         RemoteCryptoDenied(status) if status == lantern_filesystem::wire::status::ACCESS => filesystem::ErrorCode::Access,
         _ => filesystem::ErrorCode::Invalid,
+    }
+}
+
+/// Reaches the confined inference service (RFC-0034) over one [`lantern_abi::frame::Channel`]: each call goes to the
+/// endpoint in the slot its handle's badge names, as [`IpcFilesystem::routed`] does.
+pub struct IpcInference {
+    frame: *mut u8,
+}
+
+// SAFETY: as `IpcFilesystem`'s.
+unsafe impl Send for IpcInference {}
+// SAFETY: as `IpcFilesystem`'s; it's only used through `&mut self`.
+unsafe impl Sync for IpcInference {}
+
+impl IpcInference {
+    /// # Safety
+    /// As [`IpcFilesystem::routed`]'s, for the inference service.
+    pub unsafe fn new(frame: *mut u8) -> Self {
+        Self { frame }
+    }
+}
+
+impl InferenceService for IpcInference {
+    fn generate(&mut self, badge: u64, prompt: &[u8], max_tokens: usize) -> Result<Vec<u8>, InferenceError> {
+        // SAFETY: `frame` met `new`'s contract, and no other channel over it is alive.
+        let mut channel = unsafe { lantern_abi::frame::Channel::new(badge as lantern_abi::wire::CPtr, self.frame) };
+        let mut out = vec![0u8; lantern_abi::inference::MAX_REPLY];
+        match lantern_abi::inference::generate(&mut channel, max_tokens, prompt, &mut out) {
+            Ok(len) => {
+                out.truncate(len);
+                Ok(out)
+            }
+            Err(lantern_abi::inference::GenerateError::Status(status)) => Err(InferenceError::Remote(status)),
+            Err(lantern_abi::inference::GenerateError::TooLong) => Err(InferenceError::Remote(lantern_abi::frame::status::INVALID)),
+            Err(lantern_abi::inference::GenerateError::Channel(_)) => Err(InferenceError::Channel),
+        }
+    }
+}
+
+/// Reaches the wallet (RFC-0035) over one channel: each call goes to the endpoint in the slot its handle's badge names.
+pub struct IpcIdentity {
+    frame: *mut u8,
+}
+
+// SAFETY: as `IpcFilesystem`'s.
+unsafe impl Send for IpcIdentity {}
+// SAFETY: as `IpcFilesystem`'s; it's only used through `&mut self`.
+unsafe impl Sync for IpcIdentity {}
+
+impl IpcIdentity {
+    /// # Safety
+    /// As [`IpcFilesystem::routed`]'s, for the wallet.
+    pub unsafe fn new(frame: *mut u8) -> Self {
+        Self { frame }
+    }
+
+    fn channel(&self, badge: u64) -> lantern_abi::frame::Channel {
+        // SAFETY: `frame` met `new`'s contract, and no other channel over it is alive.
+        unsafe { lantern_abi::frame::Channel::new(badge as lantern_abi::wire::CPtr, self.frame) }
+    }
+}
+
+fn identity_status(err: lantern_abi::identity::IdentityError) -> u16 {
+    match err {
+        lantern_abi::identity::IdentityError::Status(s) => s,
+        lantern_abi::identity::IdentityError::Channel(_) => lantern_abi::identity::UNREACHABLE,
+    }
+}
+
+impl IdentityService for IpcIdentity {
+    fn connect(&mut self, badge: u64) -> Result<(), u16> {
+        lantern_abi::identity::connect(&mut self.channel(badge)).map_err(identity_status)
+    }
+
+    fn send(&mut self, badge: u64, message: &[u8]) -> Result<(), u16> {
+        lantern_abi::identity::send(&mut self.channel(badge), message).map_err(identity_status)
+    }
+
+    fn recv(&mut self, badge: u64) -> Result<Vec<u8>, u16> {
+        let mut out = vec![0u8; lantern_abi::identity::MESSAGE_MAX];
+        let n = lantern_abi::identity::recv(&mut self.channel(badge), &mut out).map_err(identity_status)?;
+        out.truncate(n);
+        Ok(out)
+    }
+}
+
+fn to_identity_error_code(status: u16) -> identity::ErrorCode {
+    use lantern_abi::frame::status as s;
+    match status {
+        s::ACCESS => identity::ErrorCode::Access,
+        s::INVALID => identity::ErrorCode::Invalid,
+        lantern_abi::identity::REFUSED => identity::ErrorCode::Refused,
+        _ => identity::ErrorCode::Unreachable,
+    }
+}
+
+fn to_inference_error_code(err: InferenceError) -> inference::ErrorCode {
+    use lantern_abi::frame::status;
+    match err {
+        InferenceError::Remote(status::INVALID) => inference::ErrorCode::Invalid,
+        InferenceError::Remote(status::FAILED) | InferenceError::Channel => inference::ErrorCode::Failed,
+        InferenceError::Remote(_) => inference::ErrorCode::Access,
     }
 }
 
@@ -482,6 +668,10 @@ pub struct GrantManifest {
     pub keystore_keys: Vec<Option<HostCapability>>,
     /// Resource-scoped filesystem grants — same positional-with-holes semantics.
     pub filesystem_files: Vec<Option<HostFile>>,
+    /// Resource-scoped inference grants (RFC-0034) — same semantics.
+    pub inference_models: Vec<Option<HostModel>>,
+    /// Resource-scoped identity grants (RFC-0035) — same semantics.
+    pub identity_contexts: Vec<Option<HostContext>>,
     /// Link-scoped: `Some` links `monotonic-clock`; `None` leaves it unlinked, so a
     /// component that imports it fails to instantiate.
     pub monotonic_clock: Option<MonotonicClock>,
@@ -506,8 +696,12 @@ pub struct RuntimeState {
     table: ResourceTable,
     keys: Vec<Option<HostCapability>>,
     files: Vec<Option<HostFile>>,
+    models: Vec<Option<HostModel>>,
+    contexts: Vec<Option<HostContext>>,
     keystore: Option<Box<dyn KeystoreService>>,
     filesystem: Option<Box<dyn FilesystemService>>,
+    inference: Option<Box<dyn InferenceService>>,
+    identity: Option<Box<dyn IdentityService>>,
     clock: Option<MonotonicClock>,
 }
 
@@ -518,8 +712,12 @@ impl RuntimeState {
             table: ResourceTable::new(),
             keys: manifest.keystore_keys,
             files: manifest.filesystem_files,
+            models: manifest.inference_models,
+            contexts: manifest.identity_contexts,
             keystore: None,
             filesystem: None,
+            inference: None,
+            identity: None,
             clock: manifest.monotonic_clock,
         }
     }
@@ -537,6 +735,24 @@ impl RuntimeState {
     pub fn with_filesystem(mut self, filesystem: Box<dyn FilesystemService>) -> Self {
         self.filesystem = Some(filesystem);
         self
+    }
+
+    /// Attaches the service the resource-scoped `model` handles forward to — required iff the manifest granted any.
+    pub fn with_inference(mut self, inference: Box<dyn InferenceService>) -> Self {
+        self.inference = Some(inference);
+        self
+    }
+
+    /// Attaches the wallet the resource-scoped `context` handles forward to — required iff the manifest granted any.
+    pub fn with_identity(mut self, identity: Box<dyn IdentityService>) -> Self {
+        self.identity = Some(identity);
+        self
+    }
+
+    fn context_service(&mut self, handle: &Resource<HostContext>) -> Result<(u64, &mut dyn IdentityService), identity::ErrorCode> {
+        let cap = self.table.get(handle).copied().map_err(|_| identity::ErrorCode::Access)?;
+        let service = self.identity.as_deref_mut().ok_or(identity::ErrorCode::Access)?;
+        Ok((cap.badge, service))
     }
 
     fn keystore_cap(&self, handle: &Resource<HostCapability>) -> Result<HostCapability, keystore::ErrorCode> {
@@ -681,6 +897,65 @@ impl filesystem::Host for RuntimeState {
     }
 }
 
+impl inference::HostModel for RuntimeState {
+    fn generate(
+        &mut self,
+        handle: Resource<HostModel>,
+        prompt: alloc_string::String,
+        max_tokens: u32,
+    ) -> Result<alloc_string::String, inference::ErrorCode> {
+        let cap = self.table.get(&handle).copied().map_err(|_| inference::ErrorCode::Access)?;
+        let service = self.inference.as_deref_mut().ok_or(inference::ErrorCode::Access)?;
+        let bytes = service.generate(cap.badge, prompt.as_bytes(), max_tokens as usize).map_err(to_inference_error_code)?;
+        // A token can end mid-character; the guest gets text, with any such byte replaced.
+        Ok(alloc_string::String::from_utf8_lossy(&bytes).into_owned())
+    }
+
+    fn drop(&mut self, handle: Resource<HostModel>) -> wasmtime::Result<()> {
+        self.table.delete(handle)?;
+        Ok(())
+    }
+}
+
+impl inference::Host for RuntimeState {
+    fn open(&mut self, slot: u32) -> Option<Resource<HostModel>> {
+        let cap = self.models.get(usize::try_from(slot).ok()?).copied().flatten()?;
+        self.table.push(cap).ok()
+    }
+}
+
+impl identity::HostContext for RuntimeState {
+    fn connect(&mut self, handle: Resource<HostContext>) -> Result<(), identity::ErrorCode> {
+        let (badge, service) = self.context_service(&handle)?;
+        service.connect(badge).map_err(to_identity_error_code)
+    }
+
+    fn send(&mut self, handle: Resource<HostContext>, message: Vec<u8>) -> Result<(), identity::ErrorCode> {
+        if message.len() > lantern_abi::identity::MESSAGE_MAX {
+            return Err(identity::ErrorCode::Invalid);
+        }
+        let (badge, service) = self.context_service(&handle)?;
+        service.send(badge, &message).map_err(to_identity_error_code)
+    }
+
+    fn recv(&mut self, handle: Resource<HostContext>) -> Result<Vec<u8>, identity::ErrorCode> {
+        let (badge, service) = self.context_service(&handle)?;
+        service.recv(badge).map_err(to_identity_error_code)
+    }
+
+    fn drop(&mut self, handle: Resource<HostContext>) -> wasmtime::Result<()> {
+        self.table.delete(handle)?;
+        Ok(())
+    }
+}
+
+impl identity::Host for RuntimeState {
+    fn open(&mut self, slot: u32) -> Option<Resource<HostContext>> {
+        let cap = self.contexts.get(usize::try_from(slot).ok()?).copied().flatten()?;
+        self.table.push(cap).ok()
+    }
+}
+
 impl monotonic_clock::Host for RuntimeState {
     fn now(&mut self) -> u64 {
         // `build_linker` only links this interface when `clock` is `Some`, so a linked
@@ -719,6 +994,12 @@ pub fn build_linker(
     }
     if !manifest.filesystem_files.is_empty() {
         filesystem::add_to_linker::<_, HasSelf<RuntimeState>>(&mut linker, |s| s)?;
+    }
+    if !manifest.inference_models.is_empty() {
+        inference::add_to_linker::<_, HasSelf<RuntimeState>>(&mut linker, |s| s)?;
+    }
+    if !manifest.identity_contexts.is_empty() {
+        identity::add_to_linker::<_, HasSelf<RuntimeState>>(&mut linker, |s| s)?;
     }
 
     Ok(linker)

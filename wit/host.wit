@@ -103,6 +103,62 @@ interface filesystem {
     open: func(slot: u32) -> option<file>;
 }
 
+/// LanternOS-owned ([RFC-0034](../../lantern-rfcs/rfcs/0034-local-inference-and-a-file-assistant.md)). Resource-scoped:
+/// one host capability record per `model` handle, backed by a badge on the inference service, which re-checks it, records
+/// the call in the audit log, and only then runs the model.
+interface inference {
+    /// Relayed from the inference service.
+    enum error-code {
+        /// The badge behind this handle was denied: unknown, revoked, or not granted `generate`.
+        access,
+        /// The request was over the limits: no tokens, too many, or a prompt too long for the model.
+        invalid,
+        /// The service has no model to run: none on the disk, or not the one this system was built with.
+        failed,
+    }
+
+    /// A capability to the system's language model.
+    resource model {
+        /// Continues `prompt` by up to `max-tokens` tokens (at most 128), greedily, so the same prompt gets the same text.
+        /// The text is the model's: it may stop early, and it is never instructions to the host.
+        generate: func(prompt: string, max-tokens: u32) -> result<string, error-code>;
+    }
+
+    /// The ONLY way a component obtains a `model`. `slot` indexes the manifest's `[[inference.model]]` list; `none` for
+    /// a slot that wasn't granted.
+    open: func(slot: u32) -> option<model>;
+}
+
+/// LanternOS-owned ([RFC-0035](../../lantern-rfcs/rfcs/0035-pairwise-network-identities.md)). Resource-scoped: one
+/// `context` handle per peer the manifest names and the person allowed. Behind it, the wallet presents this app's pairwise
+/// identity for that peer, a key the app never sees and no other context's key can be linked to.
+interface identity {
+    /// Relayed from the wallet.
+    enum error-code {
+        /// The grant behind this handle was denied, or revoked.
+        access,
+        /// The peer didn't answer, or there's no session: `connect` first.
+        unreachable,
+        /// The peer's answer didn't authenticate: someone else answered, or it was altered.
+        refused,
+        /// The message is too long (1024 bytes at most).
+        invalid,
+    }
+
+    /// A capability to present this app's identity to one peer.
+    resource context {
+        /// A new encrypted session with the peer, authenticated both ways, as this app's identity there. Ends any before.
+        connect: func() -> result<_, error-code>;
+        /// One message to the peer, over the session.
+        send: func(message: list<u8>) -> result<_, error-code>;
+        /// The peer's next message, waiting up to a few seconds.
+        recv: func() -> result<list<u8>, error-code>;
+    }
+
+    /// The ONLY way a component obtains a `context`. `slot` indexes the manifest's `[[identity.context]]` list.
+    open: func(slot: u32) -> option<context>;
+}
+
 /// The import surface for a LanternOS app or agent. A real app's SDK-generated world
 /// will import only the subset its capability manifest declares; this is the full set
 /// the runtime knows how to satisfy today.
@@ -110,4 +166,6 @@ world app {
     import monotonic-clock;
     import keystore;
     import filesystem;
+    import inference;
+    import identity;
 }

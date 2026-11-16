@@ -29,14 +29,18 @@ extern crate alloc;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 
-use lantern_abi::grant::{INTERFACE_FILESYSTEM, INTERFACE_KEYSTORE};
+use lantern_abi::grant::{self, INTERFACE_FILESYSTEM, INTERFACE_IDENTITY, INTERFACE_INFERENCE, INTERFACE_KEYSTORE};
+use lantern_abi::launcher::{channel_vaddr, interface_bit, is_probe, Interfaces};
 use lantern_confined_runtime::{
-    request_grant, run_and_report, run_probe, verify_package, ProbeChecks, Stage, StageResult, VerifiedPackage, DEST_CPTR,
-    FRAME_VADDR,
+    check_clean, request_grant, run_and_report, run_app, run_probe, verify_package, ProbeChecks, Stage, StageResult,
+    VerifiedPackage, APP_DEST_BASE, DEST_CPTR, ENDPOINT_CPTR, FRAME_VADDR,
 };
 use lantern_crypto::{KeyId, KeystoreError};
 use lantern_filesystem::FileId;
-use lantern_runtime::{GrantManifest, HostCapability, HostFile, IpcFilesystem, IpcKeystore, KeystoreService, RuntimeState};
+use lantern_runtime::{
+    GrantManifest, HostCapability, HostContext, HostFile, HostModel, IpcFilesystem, IpcIdentity, IpcInference, IpcKeystore,
+    KeystoreService, RuntimeState,
+};
 use lantern_sdk::plan::ResourceRequest;
 
 lantern_abi::entry!(run);
@@ -55,12 +59,89 @@ fn host_the_guest(package_len: usize) -> StageResult<()> {
     if plan.monotonic_clock.is_some() {
         return Err((Stage::Manifest, 4));
     }
-    match (plan.keystore.as_slice(), plan.filesystem.as_slice()) {
-        ([], []) => Err((Stage::Manifest, 2)),
-        (keys, []) => host_keystore(package, keys),
-        ([], files) => host_filesystem(package, files),
-        _ => Err((Stage::Manifest, 3)),
+    let mut interfaces: Interfaces = 0;
+    for (requests, interface) in [
+        (&plan.keystore, INTERFACE_KEYSTORE),
+        (&plan.filesystem, INTERFACE_FILESYSTEM),
+        (&plan.inference, INTERFACE_INFERENCE),
+        (&plan.identity, INTERFACE_IDENTITY),
+    ] {
+        if !requests.is_empty() {
+            interfaces |= interface_bit(interface);
+        }
     }
+    if interfaces == 0 {
+        return Err((Stage::Manifest, 2));
+    }
+    // The launcher mapped a channel for each interface the manifest asks for, where `channel_vaddr` says: each must be
+    // clean before it's used.
+    for interface in [INTERFACE_KEYSTORE, INTERFACE_FILESYSTEM, INTERFACE_INFERENCE, INTERFACE_IDENTITY] {
+        if interfaces & interface_bit(interface) != 0 {
+            // SAFETY: the launcher mapped this interface's channel there, from the same verified manifest, and nothing
+            // has used it yet.
+            unsafe { check_clean(channel_vaddr(interfaces, interface)) }?;
+        }
+    }
+    if !is_probe(interfaces) {
+        return host_app(package, &plan, interfaces);
+    }
+    match (plan.keystore.as_slice(), plan.filesystem.as_slice()) {
+        (keys, []) => host_keystore(package, keys),
+        (_, files) => host_filesystem(package, files),
+    }
+}
+
+/// [RFC-0034](../../../lantern-rfcs/rfcs/0034-local-inference-and-a-file-assistant.md): an app, not a probe. Every role it
+/// declares is asked for in turn, each landing in its own slot from `APP_DEST_BASE`; a declined one reads `none`. Then its
+/// `run` export runs once. The keystore isn't wired for apps yet, so an app asking for it is refused.
+fn host_app(package: VerifiedPackage, plan: &lantern_sdk::GrantPlan, interfaces: Interfaces) -> StageResult<()> {
+    if !plan.keystore.is_empty() {
+        return Err((Stage::Manifest, 3));
+    }
+    let mut next = APP_DEST_BASE;
+    let mut bind = |interface: usize, slot: usize| -> StageResult<Option<u64>> {
+        let dest = next;
+        next += 1;
+        let granted = grant::bind(ENDPOINT_CPTR, dest, interface, slot).map_err(|_| (Stage::Grant, 1))?;
+        Ok(granted.then_some(dest as u64))
+    };
+    // Routed by badge, which is the slot each badged endpoint landed in, never the file's own id.
+    let mut files = Vec::new();
+    for slot in 0..plan.filesystem.len() {
+        files.push(bind(INTERFACE_FILESYSTEM, slot)?.map(|dest| HostFile::filesystem_file(dest, FileId::from_raw(0))));
+    }
+    let mut models = Vec::new();
+    for slot in 0..plan.inference.len() {
+        models.push(bind(INTERFACE_INFERENCE, slot)?.map(HostModel::inference_model));
+    }
+    let mut contexts = Vec::new();
+    for slot in 0..plan.identity.len() {
+        contexts.push(bind(INTERFACE_IDENTITY, slot)?.map(HostContext::identity_context));
+    }
+    let grants = || GrantManifest {
+        filesystem_files: files.clone(),
+        inference_models: models.clone(),
+        identity_contexts: contexts.clone(),
+        ..Default::default()
+    };
+    let mut state = RuntimeState::new(grants());
+    if interfaces & interface_bit(INTERFACE_FILESYSTEM) != 0 {
+        // SAFETY: the launcher mapped this app's channel to the store there, for its whole life, and every file handle's
+        // badge is a slot `bind` filled with a badged endpoint to that store.
+        let fs = unsafe { IpcFilesystem::routed(channel_vaddr(interfaces, INTERFACE_FILESYSTEM) as *mut u8) };
+        state = state.with_filesystem(Box::new(fs));
+    }
+    if interfaces & interface_bit(INTERFACE_INFERENCE) != 0 {
+        // SAFETY: as above, for the inference service's channel.
+        let model = unsafe { IpcInference::new(channel_vaddr(interfaces, INTERFACE_INFERENCE) as *mut u8) };
+        state = state.with_inference(Box::new(model));
+    }
+    if interfaces & interface_bit(INTERFACE_IDENTITY) != 0 {
+        // SAFETY: as above, for the wallet's channel.
+        let wallet = unsafe { IpcIdentity::new(channel_vaddr(interfaces, INTERFACE_IDENTITY) as *mut u8) };
+        state = state.with_identity(Box::new(wallet));
+    }
+    run_app(package, &grants(), state)
 }
 
 /// Positional with holes (RFC-0015): every declared role keeps its `open(slot)` index. This

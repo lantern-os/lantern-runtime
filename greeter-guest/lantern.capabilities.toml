@@ -1,0 +1,14 @@
+# What the greeter asks for (RFC-0015, RFC-0035). Each peer is asked for at the console, separately.
+[app]
+name    = "greeter"
+version = "0.1.0"
+
+[[identity.context]]
+role          = "alice"
+ops           = ["connect"]
+justification = "Says hello to alice.test, as an identity no other peer can link to you."
+
+[[identity.context]]
+role          = "bob"
+ops           = ["connect"]
+justification = "Says hello to bob.test, as a different identity from the one alice.test sees."
