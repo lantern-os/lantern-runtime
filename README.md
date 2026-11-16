@@ -7,11 +7,8 @@ The **user-space runtime**: the service framework that system services are built
 - **Decision of record:** [ADR-0003 — WebAssembly as the portable application ABI](https://github.com/lantern-os/lantern-rfcs/blob/main/adr/0003-wasm-as-portable-app-abi.md).
 - **System context:** [wiki/Runtime](https://github.com/lantern-os/lantern-docs/blob/main/wiki/Runtime.md).
 
-> **Phase 2 complete** (RFC-0017/ADR-0021), roadmap gate now Phase 3. The engine split
-> (RFC-0013), the WIT-handle ⇄ capability mapping (RFC-0014/RFC-0016), and
-> `lantern-sdk build`'s package flow all work on a host target. The Wasmtime `riscv64`
-> custom-platform port — so this runs confined on the kernel — is Phase 3's first work.
-> See [`STATUS.md`](./STATUS.md).
+> **Phase 4** ([RFC-0036](https://github.com/lantern-os/lantern-rfcs/blob/main/rfcs/0036-phase-3-to-phase-4-transition.md)): hardware and assurance. Wasmtime with the Pulley interpreter runs confined on the kernel and hosts apps over
+> `keystore`, `filesystem`, `inference` and `identity`, each reached only through a granted capability. See [`STATUS.md`](./STATUS.md).
 
 ## Two parts
 - **Service framework** — endpoints over kernel IPC, badged multiplexing, capability
