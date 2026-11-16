@@ -1,0 +1,9 @@
+package lantern:greeter;
+
+/// RFC-0035's greeter: the identity contexts its manifest declares, and nothing else.
+world greeter {
+    import lantern:host/identity@0.1.0;
+
+    /// Runs once. `"ok: "` and what each peer said, or `"error: "` and why.
+    export run: func() -> string;
+}

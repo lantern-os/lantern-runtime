@@ -1,0 +1,10 @@
+package lantern:file-assistant;
+
+/// RFC-0034's agent: two files and the model, as its manifest declares, and nothing else.
+world file-assistant {
+    import lantern:host/filesystem@0.1.0;
+    import lantern:host/inference@0.1.0;
+
+    /// Runs once. A one-line report: `"ok: "` once the continuation is written, `"error: "` with why otherwise.
+    export run: func() -> string;
+}

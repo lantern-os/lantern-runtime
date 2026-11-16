@@ -1,0 +1,20 @@
+# What the file assistant asks for (RFC-0015, RFC-0034). `lantern-sdk build` checks the component imports exactly these
+# interfaces and signs this file together with the `.cwasm`. Each is asked for at the console, separately.
+[app]
+name    = "file-assistant"
+version = "0.1.0"
+
+[[filesystem.file]]
+role          = "input"
+ops           = ["read"]
+justification = "Reads the text you wrote to file 1 with 'write 1 ...'."
+
+[[filesystem.file]]
+role          = "output"
+ops           = ["write"]
+justification = "Writes the model's continuation of your text to file 2."
+
+[[inference.model]]
+role          = "writer"
+ops           = ["generate"]
+justification = "Asks the local language model to continue your text. Nothing leaves this machine."

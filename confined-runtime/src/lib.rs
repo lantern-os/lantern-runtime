@@ -170,12 +170,7 @@ pub fn run_and_report(arg0: usize, host: fn(usize) -> StageResult<()>) -> ! {
     unsafe { lantern_abi::rt::init_heap(HEAP_BASE, HEAP_LEN) };
     lantern_abi::rt::report_panics_via(FAILURE_CPTR);
 
-    // Before anything uses the shared `Frame`, it must be clean: a launcher that reuses one between apps clears it first.
-    // SAFETY: the loader mapped the shared Frame read/write at FRAME_VADDR, 4 KiB, before this program's first
-    // instruction, and nothing here has touched it yet.
-    let channel = unsafe { core::slice::from_raw_parts(FRAME_VADDR as *const u8, 4096) };
-    let dirty = channel.iter().position(|&b| b != 0);
-    let (cptr, stage, detail) = match dirty.map_or_else(|| host(arg0), |at| Err((Stage::Channel, at))) {
+    let (cptr, stage, detail) = match host(arg0) {
         // `heap_stats().0` is the bump pointer (an address), not a byte count.
         Ok(()) => (SUCCESS_CPTR, Stage::Done, lantern_abi::rt::heap_stats().0 - HEAP_BASE),
         Err((stage, detail)) => (FAILURE_CPTR, stage, detail),
@@ -189,6 +184,40 @@ pub fn run_and_report(arg0: usize, host: fn(usize) -> StageResult<()>) -> ! {
             core::hint::spin_loop();
         }
     }
+}
+
+/// Before anything uses a shared `Frame`, it must be clean: a launcher that reuses one between apps clears it first
+/// (RFC-0029). Detail is the first non-zero byte's offset.
+///
+/// # Safety
+/// `vaddr` must be a 4 KiB channel the launcher mapped into this program, which nothing here has used yet.
+pub unsafe fn check_clean(vaddr: usize) -> StageResult<()> {
+    // SAFETY: forwarded from this function's own contract.
+    let channel = unsafe { core::slice::from_raw_parts(vaddr as *const u8, 4096) };
+    match channel.iter().position(|&b| b != 0) {
+        Some(at) => Err((Stage::Channel, at)),
+        None => Ok(()),
+    }
+}
+
+/// [RFC-0034](https://github.com/lantern-os/lantern-rfcs/blob/main/rfcs/0034-local-inference-and-a-file-assistant.md)'s apps: where each grant's
+/// badged endpoint lands, in declaration order across the app's interfaces.
+pub const APP_DEST_BASE: usize = 13;
+
+/// An app, rather than a probe: instantiate as [`run_probe`] does, call its `run: func() -> string` export once, and pass
+/// if its report starts `ok: `. Detail on a `Verdict` failure is 0.
+pub fn run_app(package: VerifiedPackage, manifest: &GrantManifest, state: RuntimeState) -> StageResult<()> {
+    let engine = runtime_engine();
+    // SAFETY: as in `run_probe`: `VerifiedPackage` exists only for bytes whose signature verified.
+    let component = unsafe { deserialize_trusted_component(&engine, package.cwasm_bytes) }.map_err(|_| (Stage::Deserialize, 0))?;
+    let mut linker = build_linker(&engine, manifest).map_err(|_| (Stage::Link, 0))?;
+    linker.define_unknown_imports_as_traps(&component).map_err(|_| (Stage::Link, 1))?;
+    let mut store = wasmtime::Store::new(&engine, state);
+    store.set_fuel(DEFAULT_FUEL).map_err(|_| (Stage::Instantiate, 0))?;
+    let instance = linker.instantiate(&mut store, &component).map_err(|_| (Stage::Instantiate, 1))?;
+    let run = instance.get_typed_func::<(), (String,)>(&mut store, "run").map_err(|_| (Stage::Lookup, 1))?;
+    let (report,) = run.call(&mut store, ()).map_err(|_| (Stage::Call, 2))?;
+    check_report(&report, &[])
 }
 
 /// The interactive system's park notification (RFC-0026). Must equal the system loader's `RUNTIME_PARK_CPTR`.

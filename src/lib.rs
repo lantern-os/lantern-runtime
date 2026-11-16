@@ -76,8 +76,9 @@ pub mod platform;
 pub mod verified;
 
 pub use host::{
-    build_linker, FilesystemService, GrantManifest, HostCapability, HostFile,
-    InProcessFilesystem, IpcFilesystem, IpcKeystore, KeystoreService, MonotonicClock, RuntimeState,
+    build_linker, FilesystemService, GrantManifest, HostCapability, HostContext, HostFile, HostModel, IdentityService,
+    InProcessFilesystem, InferenceError, InferenceService, IpcFilesystem, IpcIdentity, IpcInference, IpcKeystore, KeystoreService, MonotonicClock,
+    RuntimeState,
 };
 pub use verified::{
     deserialize_trusted_component, load_verified_component, runtime_engine, LoadError, DEFAULT_FUEL,
